@@ -1,0 +1,5 @@
+bin
+.vscode
+docker-compose.yml
+README.md
+vol-data
