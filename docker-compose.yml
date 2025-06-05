@@ -15,6 +15,10 @@ services:
     container_name: redis-insight
     ports:
       - "5540:5540"
+    environment:
+      RI_REDIS_HOST: redis
+      RI_REDIS_PORT: 6379
+      RI_REDIS_ALIAS: "redis:6379"
     depends_on:
       - redis
     volumes:
