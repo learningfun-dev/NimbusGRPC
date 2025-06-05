@@ -17,29 +17,34 @@ NimbusGRPC is a high-throughput, scalable event processing system built using **
 
 ## Architecture Overview
 
-Here's a diagram illustrating the flow of events within the NimbusGRPC system:
+This section details the event flow specifically for the NimbusGRPC system, which leverages gRPC for client communication, Kafka for event processing, and Redis for real-time result delivery. A key aspect of this architecture is the use of Protocol Buffers (Protobuf) for efficient message serialization throughout the Kafka pipeline and pod-specific Redis channels for scalable fan-out.
+
+Here's a diagram illustrating the flow:
+
 ```mermaid
 graph TD
-    subgraph "Client Interaction & Real-time Path"
-        Client -- "1\. EventRequest (stream)" --> gRPCServer[gRPC Server]
-        gRPCServer -- "9\. EventResponse (stream)" --> Client
+    subgraph "NimbusGRPC Client & Server"
+        Client["Mobile/IoT Client (gRPC)"] -- "1\. EventRequest (Proto over gRPC Stream)" --> gRPCServer["NimbusGRPC Server Pod"]
+        gRPCServer -- "9\. EventResponse (Proto over gRPC Stream)" --> Client
     end
 
-    subgraph "Event Ingestion & Processing Pipeline"
-        gRPCServer -- "2\. KafkaEventRequest" --> KafkaEvents["Kafka (Events Topic)"]
-        KafkaEvents -- "3a\. Consume" --> EventProcessor["Kafka Consumer (Event Processor)"]
-        EventProcessor -- "4\. Process event" --> EventProcessor
-        EventProcessor -- "5\. KafkaEventResponse" --> KafkaResults["Kafka (Results Topic)"]
-        KafkaResults -- "6a\. Consume" --> ResultForwarder["Kafka Consumer (Result Forwarder)"]
-        ResultForwarder -- "7\. Publish to Redis Channel" --> Redis[Redis Pub/Sub]
-        Redis -- "8\. Receive from Pub/Sub" --> gRPCServer
+    subgraph "Kafka Event Processing Pipeline (Protobuf Messages)"
+        gRPCServer -- "2\. KafkaEventRequest (Proto, includes pod-specific RedisChannel)" --> KafkaEvents["Kafka (Events Topic - Protobuf)"]
+        KafkaEvents -- "3\. Consume Proto" --> EventProcessor["Kafka Consumer (Event Processor)"]
+        EventProcessor -- "4\. Process event (e.g., sq(n))" --> EventProcessor
+        EventProcessor -- "5\. KafkaEventResponse (Proto, includes pod-specific RedisChannel)" --> KafkaResults["Kafka (Results Topic - Protobuf)"]
+        KafkaResults -- "6\. Consume Proto" --> ResultForwarder["Kafka Consumer (Result Forwarder)"]
     end
 
-    subgraph "Hypothetical Database Persistence Path"
-        KafkaEvents -- "3b\. Consume (for DB)" --> EventDBWriter["Kafka Consumer (Event DB Writer)"]
-        EventDBWriter -- "Persist Event" --> Database[(Database)]
-        KafkaResults -- "6b\. Consume (for DB)" --> ResultDBUpdater["Kafka Consumer (Result DB Updater)"]
-        ResultDBUpdater -- "Update/Persist Result" --> Database
+    subgraph "Redis Pub/Sub for Real-time Delivery (Pod-Specific Channels)"
+        ResultForwarder -- "7\. SPUBLISH KafkaEventResponse (Proto) to Pod-Specific RedisChannel" --> Redis["Redis Cluster Pub/Sub"]
+        Redis -- "8\. SSUBSCRIBE & Receive on own Pod-Specific Channel" --> gRPCServer
+    end
+
+    subgraph "Optional Database Persistence"
+        EventProcessor -- "10a. Store/Update Processed Data" --> Database["(Database)"]
+        KafkaEvents -- "10b. Consume for Auditing" --> EventDBWriter["Kafka Consumer (Event Archiver)"]
+        EventDBWriter -- "10c. Persist Raw Event" --> Database
     end
 ```
 
@@ -47,20 +52,33 @@ This diagram shows:
 
 ### Core Real-time Flow:
 
-1. The **Client** sends an `EventRequest` via a gRPC stream to the gRPC Server.
-1. The **gRPC Server** publishes a corresponding `KafkaEventRequest` to the Kafka (Events Topic).
-1. The **Kafka Consumer (Event Processor) (3a)** consumes this request from the events topic.
-1. The **Event Processor** performs the necessary computation (e.g., squaring a number).
-1. The **Event Processor** publishes a `KafkaEventResponse` (containing the result) to the **Kafka (Results Topic)**.
-1. **The Kafka Consumer (Result Forwarder) (6a)** consumes this response from the results topic.
-1. The **Result Forwarder** publishes the processed event details to a specific **Redis** channel (indicated in the message).
-1. The **gRPC Server** (which is subscribed to the relevant Redis channels) receives the processed event from Redis.
-1. The **gRPC Server** sends the final `EventResponse` back to the original Client over the established gRPC stream.
+This diagram shows the following flow for NimbusGRPC:
 
-### Hypothetical Database Persistence Flow:
+1. The **Mobile/IoT Client** sends an `EventRequest` (serialized as Protobuf) via a gRPC bidirectional stream to a specific **NimbusGRPC Server Pod**.
 
-1. Alongside the main processing, a **Kafka Consumer (Event DB Writer) (3b)** could also consume from the `Kafka (Events Topic)` to persist the raw incoming events into a Database.
-1. Similarly, a **Kafka Consumer (Result DB Updater) (6b)** could consume from the `Kafka (Results Topic)` to update the database with the processed results or store them.
+1. The **NimbusGRPC Server Pod** receives the Protobuf message. It then embeds its own unique, pod-specific Redis channel name (e.g., `results:grpc-pod-456`) into the `RedisChannel` field of a `KafkaEventRequest` (Protobuf). This `KafkaEventRequest` is then published to the **Kafka (Events Topic)**. All messages in this Kafka topic are Protobuf encoded.
+
+1. A **Kafka Consumer (Event Processor)**, part of a consumer group, subscribes to the "Events Topic." It deserializes the Protobuf `KafkaEventRequest`.
+
+1. The **Event Processor** performs the necessary business logic (e.g., squaring a number). The pod-specific `RedisChannel` is carried through.
+
+1. The **Event Processor** creates a `KafkaEventResponse` (also Protobuf), ensuring it includes the original `client_id` and the critical pod-specific `RedisChannel`. This response is published to the **Kafka (Results Topic)**, again using Protobuf.
+
+1. A **Kafka Consumer (Result Forwarder)**, part of another consumer group, subscribes to the "Results Topic" and deserializes the Protobuf `KafkaEventResponse`.
+
+1. The **Result Forwarder** reads the pod-specific `RedisChannel` from the message. It then uses Redis Cluster's `SPUBLISH` command to send the `KafkaEventResponse` (still as a Protobuf byte array) only to that designated pod-specific channel in **Redis Cluster Pub/Sub**.
+
+1. The target **NimbusGRPC Server Pod**, which had previously subscribed to its unique pod-specific channel using `SSUBSCRIBE`, receives the message from Redis.
+
+1. The **NimbusGRPC Server Pod** deserializes the message, identifies the correct client gRPC stream using the `client_id` from the message, and sends the `EventResponse` (Protobuf) back to the Client over the gRPC stream.
+
+(Optional Database Interaction)
+
+`10a` The **Event Processor** can also interact with a Database to store or update data based on the processed event.
+
+`10b, 10c` A separate **Kafka Consumer (Event Archiver)** could consume from the `Kafka (Events Topic)` to persist raw Protobuf events into a Database for auditing, analytics, or long-term storage.
+
+This architecture leverages Protobuf for efficient data handling throughout the Kafka pipeline and uses pod-specific Redis channels (optimally with `SPUBLISH`/`SSUBSCRIBE` in a Redis Cluster) to ensure scalable and targeted real-time delivery of results back to the correct gRPC server pod and subsequently to the client.
 
 ## Key Files & Packages
 
