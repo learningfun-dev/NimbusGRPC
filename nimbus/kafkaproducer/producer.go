@@ -1,7 +1,6 @@
 package kafkaproducer
 
 import (
-	"encoding/json"
 	"fmt"
 	"log"
 	"sync"
@@ -10,6 +9,7 @@ import (
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
 	"github.com/learningfun-dev/NimbusGRPC/nimbus/config"   // Your config package
 	pb "github.com/learningfun-dev/NimbusGRPC/nimbus/proto" // Your proto package
+	"google.golang.org/protobuf/proto"
 )
 
 const (
@@ -90,8 +90,8 @@ func InitProducer(cfg *config.Config) error {
 }
 
 // sendMessageInternal handles the core logic of producing a message to Kafka.
-// messagePayload should be a struct that can be marshaled to JSON.
-func sendMessageInternal(topic string, messagePayload interface{}) error {
+// messagePayload should be a struct that can be marshaled to proto.
+func sendMessageInternal(topic string, messagePayload proto.Message) error {
 	producerMutex.Lock()
 	if !isInitialized {
 		producerMutex.Unlock()
@@ -104,7 +104,7 @@ func sendMessageInternal(topic string, messagePayload interface{}) error {
 	currentProducer := producer
 	producerMutex.Unlock()
 
-	value, err := json.Marshal(messagePayload)
+	value, err := proto.Marshal(messagePayload)
 	if err != nil {
 		return fmt.Errorf("failed to marshal message payload for topic %s: %w", topic, err)
 	}

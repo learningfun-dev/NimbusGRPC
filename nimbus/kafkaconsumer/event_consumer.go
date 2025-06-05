@@ -2,7 +2,6 @@ package kafkaconsumer
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"strings"
@@ -13,6 +12,7 @@ import (
 	"github.com/learningfun-dev/NimbusGRPC/nimbus/config"        // Your config package
 	"github.com/learningfun-dev/NimbusGRPC/nimbus/kafkaproducer" // Your Kafka producer package
 	pb "github.com/learningfun-dev/NimbusGRPC/nimbus/proto"      // Your proto package
+	"google.golang.org/protobuf/proto"
 )
 
 // EventConsumer consumes events from KafkaEventsTopic, processes them,
@@ -97,7 +97,7 @@ func (ec *EventConsumer) Start(ctx context.Context) {
 				*msg.TopicPartition.Topic, msg.TopicPartition.Partition, msg.TopicPartition.Offset, string(msg.Key))
 
 			var eventReq pb.KafkaEventRequest
-			if err := json.Unmarshal(msg.Value, &eventReq); err != nil {
+			if err := proto.Unmarshal(msg.Value, &eventReq); err != nil {
 				log.Printf("[ERROR] EventConsumer: Failed to unmarshal KafkaEventRequest from topic '%s': %v. Message: %s",
 					*msg.TopicPartition.Topic, err, string(msg.Value))
 				// Consider sending to a dead-letter queue or logging for manual inspection.
