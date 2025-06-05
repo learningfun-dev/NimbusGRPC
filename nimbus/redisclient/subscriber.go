@@ -2,7 +2,6 @@ package redisclient
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"log"
 	"net"
@@ -10,6 +9,7 @@ import (
 
 	pb "github.com/learningfun-dev/NimbusGRPC/nimbus/proto"
 	"github.com/redis/go-redis/v9"
+	"google.golang.org/protobuf/proto"
 )
 
 // StreamSender defines the interface required by RedisSubscriber
@@ -65,7 +65,7 @@ func (rs *RedisSubscriber) Start(ctx context.Context) {
 		default:
 			// Attempt to subscribe
 			if pubsub == nil {
-				pubsub = rs.redisClient.Subscribe(ctx, rs.channel)
+				pubsub = rs.redisClient.SSubscribe(ctx, rs.channel)
 				// Check for initial subscription error
 				_, err := pubsub.Receive(ctx) // This is a control message from go-redis
 				if err != nil {
@@ -146,7 +146,7 @@ func (rs *RedisSubscriber) Start(ctx context.Context) {
 
 func (rs *RedisSubscriber) processRedisMessage(payload string) {
 	var kafkaEventResp pb.KafkaEventResponse // Use your actual proto message type
-	if err := json.Unmarshal([]byte(payload), &kafkaEventResp); err != nil {
+	if err := proto.Unmarshal([]byte(payload), &kafkaEventResp); err != nil {
 		log.Printf("[ERROR] RedisSubscriber: Error decoding Redis message payload on channel '%s': %v. Payload: %s", rs.channel, err, payload)
 		return // Skip malformed messages
 	}

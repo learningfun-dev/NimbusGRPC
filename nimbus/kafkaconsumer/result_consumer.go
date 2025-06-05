@@ -2,7 +2,6 @@ package kafkaconsumer
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"sync"
@@ -12,6 +11,7 @@ import (
 	"github.com/learningfun-dev/NimbusGRPC/nimbus/config"      // Your config package
 	pb "github.com/learningfun-dev/NimbusGRPC/nimbus/proto"    // Your proto package
 	"github.com/learningfun-dev/NimbusGRPC/nimbus/redisclient" // Your Redis client package
+	"google.golang.org/protobuf/proto"
 )
 
 // ResultConsumer consumes results from KafkaResultsTopic and publishes them to Redis.
@@ -87,7 +87,7 @@ func (rc *ResultConsumer) Start(ctx context.Context) {
 				*msg.TopicPartition.Topic, msg.TopicPartition.Partition, msg.TopicPartition.Offset, string(msg.Key))
 
 			var eventResp pb.KafkaEventResponse
-			if err := json.Unmarshal(msg.Value, &eventResp); err != nil {
+			if err := proto.Unmarshal(msg.Value, &eventResp); err != nil {
 				log.Printf("[ERROR] ResultConsumer: Failed to unmarshal KafkaEventResponse from topic '%s': %v. Message: %s",
 					*msg.TopicPartition.Topic, err, string(msg.Value))
 				continue
