@@ -11,7 +11,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/joho/godotenv"
 	"github.com/learningfun-dev/NimbusGRPC/nimbus/config"
 	"github.com/learningfun-dev/NimbusGRPC/nimbus/kafkaproducer"
 	pb "github.com/learningfun-dev/NimbusGRPC/nimbus/proto"
@@ -29,10 +28,6 @@ type Server struct {
 }
 
 func main() {
-	err := godotenv.Load() // Tries to load .env from current directory
-	if err != nil {
-		log.Println("[INFO] No .env file found or error loading .env, using system environment variables or defaults.")
-	}
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	log.Println("[INFO] NimbusGRPC server starting...")
 
