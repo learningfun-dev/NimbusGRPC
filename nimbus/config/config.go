@@ -6,6 +6,8 @@ import (
 	"os"
 	"strconv"
 	"time"
+
+	"github.com/joho/godotenv"
 )
 
 // Constants for default configuration values.
@@ -32,6 +34,10 @@ type Config struct {
 
 // Load loads configuration from environment variables, falling back to defaults.
 func Load() (*Config, error) {
+	err := godotenv.Load() // Tries to load .env from current directory
+	if err != nil {
+		log.Println("[INFO] No .env file found or error loading .env, using system environment variables or defaults.")
+	}
 	cfg := &Config{
 		Port:               DefaultPort,
 		RedisAddress:       DefaultRedisAddress,

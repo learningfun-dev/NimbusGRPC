@@ -9,7 +9,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/joho/godotenv"
 	"github.com/learningfun-dev/NimbusGRPC/nimbus/config"        // Your config package
 	"github.com/learningfun-dev/NimbusGRPC/nimbus/kafkaconsumer" // Your new Kafka consumer package
 	"github.com/learningfun-dev/NimbusGRPC/nimbus/kafkaproducer" // Your Kafka producer package
@@ -17,10 +16,6 @@ import (
 )
 
 func main() {
-	err := godotenv.Load() // Tries to load .env from current directory
-	if err != nil {
-		log.Println("[INFO] No .env file found or error loading .env, using system environment variables or defaults.")
-	}
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	log.Println("[INFO] Kafka Consumer Service starting...")
 
