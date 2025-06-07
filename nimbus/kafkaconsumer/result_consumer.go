@@ -8,10 +8,16 @@ import (
 	"time"
 
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
-	"github.com/learningfun-dev/NimbusGRPC/nimbus/config"      // Your config package
+	"github.com/learningfun-dev/NimbusGRPC/nimbus/config" // Your config package
+	"github.com/learningfun-dev/NimbusGRPC/nimbus/kafkaproducer"
 	pb "github.com/learningfun-dev/NimbusGRPC/nimbus/proto"    // Your proto package
 	"github.com/learningfun-dev/NimbusGRPC/nimbus/redisclient" // Your Redis client package
 	"google.golang.org/protobuf/proto"
+)
+
+const (
+	REDIS_CLIENT_STATUS_LIVE   = "LIVE"
+	REDIS_CLIENT_STATUS_REPLAY = "REPLAY"
 )
 
 // ResultConsumer consumes results from KafkaResultsTopic and publishes them to Redis.
@@ -94,7 +100,7 @@ func (rc *ResultConsumer) Start(ctx context.Context) {
 			}
 
 			log.Printf("[INFO] ResultConsumer: Processing result: %+v from topic '%s'", eventResp, *msg.TopicPartition.Topic)
-			rc.publishToRedis(ctx, &eventResp) // Pass context for Redis publish
+			rc.publishResults(ctx, &eventResp) // Pass context for publish
 
 			// If using manual commits:
 			// if _, err := rc.consumer.CommitMessage(msg); err != nil {
@@ -105,12 +111,63 @@ func (rc *ResultConsumer) Start(ctx context.Context) {
 	log.Printf("[INFO] ResultConsumer: Message consumption loop stopped for topic '%s'.", rc.appConfig.KafkaResultsTopic)
 }
 
-func (rc *ResultConsumer) publishToRedis(ctx context.Context, resp *pb.KafkaEventResponse) {
+func (rc *ResultConsumer) publishToDLQ(ctx context.Context, resp *pb.KafkaEventResponse) {
+	err := kafkaproducer.PublishEventResponse(rc.appConfig.KafkaDLQTopic, resp)
+
+	if err != nil {
+		log.Printf("[ERROR] ResultConsumer: Failed to publish result to Kafka topic '%s' for clientID '%s': %v. Result: %+v",
+			rc.appConfig.KafkaDLQTopic, resp.ClientId, err, resp)
+	}
+}
+
+func (rc *ResultConsumer) publishResults(ctx context.Context, resp *pb.KafkaEventResponse) {
 	if resp.RedisChannel == "" {
 		log.Printf("[WARN] ResultConsumer: RedisChannel is empty in KafkaEventResponse for clientID '%s'. Cannot publish to Redis.", resp.ClientId)
 		return
 	}
 
+	redisChannelFromClientKey, err := redisclient.GetKeyValue(ctx, resp.ClientId)
+
+	if err != nil {
+		// error means, Client not connected send the results to DLQ
+		log.Printf("[WARN] ResultConsumer: clientID not connected '%s', sending results to DLQ: '%s'", resp.ClientId, rc.appConfig.KafkaDLQTopic)
+		// sending the results to kafka DLQ here.
+		rc.publishToDLQ(ctx, resp)
+	}
+
+	// Lets check the status of client, if it is LIVE or REPLAY
+	clientStatusFromRedis, err := redisclient.GetKeyValue(ctx, resp.ClientId+"-status")
+
+	if err != nil {
+		log.Printf("[WARN] ResultConsumer: clientID status not found '%s', sending results to DLQ: '%s'", resp.ClientId, rc.appConfig.KafkaDLQTopic)
+
+		// May be the status was not set before, lets compare the redis channel from redis vs result
+		if redisChannelFromClientKey != resp.RedisChannel {
+			// If different send set the redis client status to repllay
+			log.Printf("[WARN] ResultConsumer: clientID: %s is connected to new Redis channel. Event Redis Channel: '%s' , Redis Channel in Redis key value %s", resp.ClientId, resp.RedisChannel, redisChannelFromClientKey)
+
+			log.Printf("[WARN] ResultConsumer: setting the client: '%s' status to 'REPLAY' in redis", resp.ClientId)
+
+			err := redisclient.SetKeyValue(ctx, resp.ClientId+"-status", REDIS_CLIENT_STATUS_REPLAY)
+
+			if err != nil {
+				log.Printf("[ERROR] ResultConsumer: error saving in KEY: %s, Value: %s ", resp.ClientId+"-status", REDIS_CLIENT_STATUS_REPLAY)
+			}
+			// Now, send the results to kafka DLQ here.
+			rc.publishToDLQ(ctx, resp)
+		}
+	}
+
+	if clientStatusFromRedis != REDIS_CLIENT_STATUS_LIVE {
+		log.Printf("[WARN] ResultConsumer: clientID status is not live in redis for clientId: '%s', sending results to DLQ: '%s'", resp.ClientId, rc.appConfig.KafkaDLQTopic)
+		// Now, send the results to kafka DLQ in this case also.
+		rc.publishToDLQ(ctx, resp)
+	}
+
+	rc.publishToRedis(ctx, resp)
+}
+
+func (rc *ResultConsumer) publishToRedis(ctx context.Context, resp *pb.KafkaEventResponse) {
 	// The redisclient.Publish function takes a context.
 	err := redisclient.Publish(ctx, resp) // Pass the context
 	if err != nil {

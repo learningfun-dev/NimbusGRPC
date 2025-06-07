@@ -11,6 +11,7 @@ import (
 
 	"github.com/learningfun-dev/NimbusGRPC/nimbus/kafkaproducer"
 	pb "github.com/learningfun-dev/NimbusGRPC/nimbus/proto"
+	"github.com/learningfun-dev/NimbusGRPC/nimbus/redisclient"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -51,6 +52,7 @@ func (csm *ClientStreamManager) Register(clientID string, stream pb.NimbusServic
 	}
 	csm.streams[clientID] = cs
 	log.Printf("[INFO] ClientStreamManager: Registered stream for clientID: %s", clientID)
+
 	return cs
 }
 
@@ -134,6 +136,10 @@ func (s *Server) ProcessEvent(stream pb.NimbusService_ProcessEventServer) error 
 	// s.clientStreamManager is part of the Server struct
 	clientStream := s.clientStreamManager.Register(clientID, stream)
 	defer s.clientStreamManager.Deregister(clientID) // Ensure stream is deregistered on exit
+
+	// Create redis key-->value for clientId --> Pod_redis_channel
+	redisclient.SetKeyValue(stream.Context(), clientID, s.appConfig.RedisEventsChannel)
+	defer redisclient.DeleteKey(stream.Context(), clientID)
 
 	// Goroutine to handle context cancellation (client disconnect, server shutdown)
 	// This helps in logging or cleanup if the stream context finishes independently.

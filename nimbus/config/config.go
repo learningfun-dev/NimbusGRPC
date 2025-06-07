@@ -12,13 +12,14 @@ import (
 
 // Constants for default configuration values.
 const (
-	DefaultPort               = 50051
-	DefaultRedisAddress       = "localhost:6379"
-	DefaultKafkaBrokers       = "localhost:9092"
-	DefaultRedisEventsChannel = "events_results_default_pod" // Default channel for Redis events results
-	DefaultShutdownTimeout    = 15 * time.Second             // Default ShutdownTimeout
-	DefaultKafkaEventsTopic   = "events-v1-topic"            // Default Kafka topic for producer and consumer
-	DefaultKafkaResultsTopic  = "results-v1-topic"           // Default Kafka topic for producer and consumer
+	DefaultPort                = 50051
+	DefaultRedisAddress        = "localhost:6379"
+	DefaultKafkaBrokers        = "localhost:9092"
+	DefaultRedisResultsChannel = "events_results_default_pod" // Default channel for Redis events results
+	DefaultShutdownTimeout     = 15 * time.Second             // Default ShutdownTimeout
+	DefaultKafkaEventsTopic    = "events-v1-topic"            // Default Kafka topic for events topic
+	DefaultKafkaResultsTopic   = "results-v1-topic"           // Default Kafka topic for result topic
+	DefaultKafkaDLQTopic       = "dlq-v1-topic"               // Default Kafka topic for DLQ
 )
 
 // Config holds all application configuration.
@@ -30,6 +31,7 @@ type Config struct {
 	ShutdownTimeout    time.Duration
 	KafkaEventsTopic   string
 	KafkaResultsTopic  string
+	KafkaDLQTopic      string
 }
 
 // Load loads configuration from environment variables, falling back to defaults.
@@ -42,10 +44,11 @@ func Load() (*Config, error) {
 		Port:               DefaultPort,
 		RedisAddress:       DefaultRedisAddress,
 		KafkaBrokers:       DefaultKafkaBrokers,
-		RedisEventsChannel: DefaultRedisEventsChannel,
+		RedisEventsChannel: DefaultRedisResultsChannel,
 		ShutdownTimeout:    DefaultShutdownTimeout,
 		KafkaEventsTopic:   DefaultKafkaEventsTopic,
 		KafkaResultsTopic:  DefaultKafkaResultsTopic,
+		KafkaDLQTopic:      DefaultKafkaDLQTopic,
 	}
 
 	// Read Port from environment variable
@@ -80,6 +83,11 @@ func Load() (*Config, error) {
 	// Read Kafka Results topic from environment variable
 	if kafkaResultsTopicEnv := os.Getenv("NIMBUS_KAFKA_RESULTS_TOPIC"); kafkaResultsTopicEnv != "" {
 		cfg.KafkaResultsTopic = kafkaResultsTopicEnv
+	}
+
+	// Read Kafka DLQ topic from environment variable
+	if kafkaDLQTopicEnv := os.Getenv("NIMBUS_KAFKA_DLQ_TOPIC"); kafkaDLQTopicEnv != "" {
+		cfg.KafkaDLQTopic = kafkaDLQTopicEnv
 	}
 
 	// Read Shutdown timeout from environment variable
