@@ -80,5 +80,21 @@ about: ## Display info related to the build
 	@echo "Go package: ${PACKAGE}"
 	@echo "Openssl version: $(shell openssl version)"
 
+build-n-start: clean nimbus start-server	
+
+start-server:
+	./bin/nimbus/cmd/server
+
+start-kafka-consumer:
+	./bin/nimbus/cmd/kafkaconsumer
+
+start-client1:
+	./bin/nimbus/cmd/client --client_id=manoj --start=1 --end=1000
+
+start-client2:
+	./bin/nimbus/cmd/client --client_id=james --start=100000 --end=1000000
+
+
+
 help: ## Show this help
 	@${HELP_CMD}
