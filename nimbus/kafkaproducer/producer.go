@@ -25,7 +25,6 @@ var (
 )
 
 // InitProducer initializes the Kafka producer using settings from the provided configuration.
-// This should be called once at application startup.
 func InitProducer(cfg *config.Config) error {
 	producerMutex.Lock()
 	defer producerMutex.Unlock()
@@ -41,7 +40,7 @@ func InitProducer(cfg *config.Config) error {
 	if cfg.KafkaBrokers == "" {
 		return fmt.Errorf("kafka brokers configuration is empty in provided config")
 	}
-	if cfg.KafkaEventsTopic == "" { // We'll use this as the default for event requests
+	if cfg.KafkaEventsTopic == "" {
 		return fmt.Errorf("kafka events topic (default for requests) is empty in provided config")
 	}
 
@@ -69,9 +68,9 @@ func InitProducer(cfg *config.Config) error {
 			switch ev := e.(type) {
 			case *kafka.Message:
 				if ev.TopicPartition.Error != nil {
-					log.Printf("[ERROR] KafkaProducer: Delivery failed for message to %v: %v", ev.TopicPartition, ev.TopicPartition.Error)
+					log.Printf("[ERROR] KafkaProducer: Delivery failed for message with key '%s' to %v: %v", string(ev.Key), ev.TopicPartition, ev.TopicPartition.Error)
 				} else {
-					log.Printf("[DEBUG] KafkaProducer: Message delivered to %v (offset %d)", ev.TopicPartition, ev.TopicPartition.Offset)
+					log.Printf("[DEBUG] KafkaProducer: Message with key '%s' delivered to %v (offset %d)", string(ev.Key), ev.TopicPartition, ev.TopicPartition.Offset)
 				}
 			case kafka.Error:
 				log.Printf("[ERROR] KafkaProducer: Producer error: %v (Code: %d, Fatal: %t)", ev, ev.Code(), ev.IsFatal())
@@ -90,8 +89,8 @@ func InitProducer(cfg *config.Config) error {
 }
 
 // sendMessageInternal handles the core logic of producing a message to Kafka.
-// messagePayload should be a struct that can be marshaled to proto.
-func sendMessageInternal(topic string, messagePayload proto.Message) error {
+// messageKey should be the client_id to ensure ordering.
+func sendMessageInternal(topic string, messageKey string, messagePayload proto.Message) error {
 	producerMutex.Lock()
 	if !isInitialized {
 		producerMutex.Unlock()
@@ -113,6 +112,7 @@ func sendMessageInternal(topic string, messagePayload proto.Message) error {
 
 	err = currentProducer.Produce(&kafka.Message{
 		TopicPartition: kafka.TopicPartition{Topic: &topic, Partition: kafka.PartitionAny},
+		Key:            []byte(messageKey),
 		Value:          value,
 	}, deliveryChan)
 
@@ -128,34 +128,39 @@ func sendMessageInternal(topic string, messagePayload proto.Message) error {
 		if m.TopicPartition.Error != nil {
 			return fmt.Errorf("kafka message delivery failed to topic %s: %w", topic, m.TopicPartition.Error)
 		}
-		log.Printf("[DEBUG] KafkaProducer: Message successfully delivered to topic %s, partition %d, offset %v",
-			*m.TopicPartition.Topic, m.TopicPartition.Partition, m.TopicPartition.Offset)
+		log.Printf("[DEBUG] KafkaProducer: Message with key '%s' successfully delivered to topic %s, partition %d, offset %v",
+			string(m.Key), *m.TopicPartition.Topic, m.TopicPartition.Partition, m.TopicPartition.Offset)
 		return nil
 	case <-time.After(defaultDeliveryTimeout):
-		return fmt.Errorf("timeout waiting for Kafka delivery confirmation to topic %s", topic)
+		return fmt.Errorf("timeout waiting for Kafka delivery confirmation to topic %s for key %s", topic, messageKey)
 	}
 }
 
-// PublishEventRequest sends a KafkaEventRequest to the specified Kafka topic.
+// PublishEventRequest sends a KafkaEventRequest to the specified Kafka topic, using the clientID as the key.
 func PublishEventRequest(topic string, req *pb.KafkaEventRequest) error {
 	if !isInitialized {
 		return fmt.Errorf("kafka producer not initialized, cannot publish event request")
 	}
-	log.Printf("[DEBUG] KafkaProducer: Publishing EventRequest to topic '%s': %+v", topic, req)
-	return sendMessageInternal(topic, req)
+	if req.ClientId == "" {
+		return fmt.Errorf("cannot publish event request with empty ClientId as key")
+	}
+	log.Printf("[DEBUG] KafkaProducer: Publishing EventRequest to topic '%s' with key '%s': %+v", topic, req.ClientId, req)
+	return sendMessageInternal(topic, req.ClientId, req)
 }
 
-// PublishEventResponse sends a KafkaEventResponse to the specified Kafka topic.
+// PublishEventResponse sends a KafkaEventResponse to the specified Kafka topic, using the clientID as the key.
 func PublishEventResponse(topic string, resp *pb.KafkaEventResponse) error {
 	if !isInitialized {
 		return fmt.Errorf("kafka producer not initialized, cannot publish event response")
 	}
-	log.Printf("[DEBUG] KafkaProducer: Publishing EventResponse to topic '%s': %+v", topic, resp)
-	return sendMessageInternal(topic, resp)
+	if resp.ClientId == "" {
+		return fmt.Errorf("cannot publish event response with empty ClientId as key")
+	}
+	log.Printf("[DEBUG] KafkaProducer: Publishing EventResponse to topic '%s' with key '%s': %+v", topic, resp.ClientId, resp)
+	return sendMessageInternal(topic, resp.ClientId, resp)
 }
 
-// SendEventToDefaultTopic sends a KafkaEventRequest to the default events topic configured during InitProducer.
-// This replaces the old SendEventToKafkaTopic.
+// SendEventToDefaultTopic sends a KafkaEventRequest to the default events topic, using the clientID as the key.
 func SendEventToDefaultTopic(req *pb.KafkaEventRequest) error {
 	if !isInitialized {
 		return fmt.Errorf("kafka producer not initialized, cannot send event to default topic")
