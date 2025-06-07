@@ -85,11 +85,17 @@ build-n-start: clean nimbus start-server
 start-server:
 	./bin/nimbus/cmd/server
 
+start-server-redis-channel-override:
+	NIMBUS_REDIS_EVENTS_CHANNEL="events_results:nimbus_grpc:pod_777" ./bin/nimbus/cmd/server
+
 start-kafka-consumer:
 	./bin/nimbus/cmd/kafkaconsumer
 
 start-client1:
 	./bin/nimbus/cmd/client --client_id=manoj --start=1 --end=1000
+
+standby-client1:
+	./bin/nimbus/cmd/client --client_id=manoj --start=0 --end=0
 
 start-client2:
 	./bin/nimbus/cmd/client --client_id=james --start=100000 --end=1000000

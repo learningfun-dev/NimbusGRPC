@@ -8,7 +8,8 @@ import (
 	"time"
 
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
-	"github.com/learningfun-dev/NimbusGRPC/nimbus/config"      // Your config package
+	"github.com/learningfun-dev/NimbusGRPC/nimbus/config" // Your config package
+	"github.com/learningfun-dev/NimbusGRPC/nimbus/kafkaproducer"
 	pb "github.com/learningfun-dev/NimbusGRPC/nimbus/proto"    // Your proto package
 	"github.com/learningfun-dev/NimbusGRPC/nimbus/redisclient" // Your Redis client package
 	"google.golang.org/protobuf/proto"
@@ -111,6 +112,27 @@ func (rc *ResultConsumer) publishToRedis(ctx context.Context, resp *pb.KafkaEven
 		return
 	}
 
+	redisChannelFromClientKey, err := redisclient.GeyKey(ctx, resp.ClientId)
+
+	if err != nil {
+		log.Printf("[WARN] ResultConsumer: clientID not connected '%s', sending results to DLQ: '%s'", resp.ClientId, rc.appConfig.KafkaDLQTopic)
+		// sending the results to kafka DLQ here.
+		err := kafkaproducer.PublishEventResponse(rc.appConfig.KafkaDLQTopic, resp)
+
+		if err != nil {
+			log.Printf("[ERROR] ResultConsumer: Failed to publish result to Kafka topic '%s' for clientID '%s': %v. Result: %+v",
+				rc.appConfig.KafkaDLQTopic, resp.ClientId, err, resp)
+		}
+	}
+
+	if redisChannelFromClientKey != resp.RedisChannel {
+		log.Printf("[INFO] ResultConsumer: clientID connected to new Redis channel. Event Redis Channel: '%s', sending results to new redis channel: '%s'", resp.RedisChannel, redisChannelFromClientKey)
+		resp.RedisChannel = redisChannelFromClientKey
+	}
+	publishToRedis(ctx, resp)
+}
+
+func publishToRedis(ctx context.Context, resp *pb.KafkaEventResponse) {
 	// The redisclient.Publish function takes a context.
 	err := redisclient.Publish(ctx, resp) // Pass the context
 	if err != nil {
