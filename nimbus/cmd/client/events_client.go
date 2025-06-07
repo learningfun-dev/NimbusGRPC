@@ -17,6 +17,13 @@ import (
 func sendRequests(ctx context.Context, stream pb.NimbusService_ProcessEventClient, clientID string, start int, end int) error {
 	log.Printf("[INFO] Client %s: Starting to send events from %d to %d.", clientID, start, end)
 
+	if start == end && end == 0 {
+		log.Println("----------------------------------------------------------------------------------------------")
+		log.Printf("[INFO] Client %s: not sending any events, standing by for results from server.", clientID)
+		log.Println("----------------------------------------------------------------------------------------------")
+		return nil
+	}
+
 	for i := start; i <= end; i++ {
 		select {
 		case <-ctx.Done():
@@ -40,12 +47,12 @@ func sendRequests(ctx context.Context, stream pb.NimbusService_ProcessEventClien
 		// time.Sleep(100 * time.Millisecond)
 	}
 
-	// After sending all requests, close the send direction of the stream.
-	// This signals to the server that the client will not send any more messages.
-	if err := stream.CloseSend(); err != nil {
-		log.Printf("[ERROR] Client %s: Failed to close send stream: %v", clientID, err)
-		return fmt.Errorf("failed to close send stream: %w", err)
-	}
+	// // After sending all requests, close the send direction of the stream.
+	// // This signals to the server that the client will not send any more messages.
+	// if err := stream.CloseSend(); err != nil {
+	// 	log.Printf("[ERROR] Client %s: Failed to close send stream: %v", clientID, err)
+	// 	return fmt.Errorf("failed to close send stream: %w", err)
+	// }
 	log.Printf("[INFO] Client %s: Finished sending all events and closed send stream.", clientID)
 	return nil
 }
