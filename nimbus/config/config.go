@@ -24,14 +24,14 @@ const (
 
 // Config holds all application configuration.
 type Config struct {
-	Port               int
-	RedisAddress       string
-	KafkaBrokers       string
-	RedisEventsChannel string
-	ShutdownTimeout    time.Duration
-	KafkaEventsTopic   string
-	KafkaResultsTopic  string
-	KafkaDLQTopic      string
+	Port                int
+	RedisAddress        string
+	KafkaBrokers        string
+	RedisResultsChannel string
+	ShutdownTimeout     time.Duration
+	KafkaEventsTopic    string
+	KafkaResultsTopic   string
+	KafkaDLQTopic       string
 }
 
 // Load loads configuration from environment variables, falling back to defaults.
@@ -41,14 +41,14 @@ func Load() (*Config, error) {
 		log.Println("[INFO] No .env file found or error loading .env, using system environment variables or defaults.")
 	}
 	cfg := &Config{
-		Port:               DefaultPort,
-		RedisAddress:       DefaultRedisAddress,
-		KafkaBrokers:       DefaultKafkaBrokers,
-		RedisEventsChannel: DefaultRedisResultsChannel,
-		ShutdownTimeout:    DefaultShutdownTimeout,
-		KafkaEventsTopic:   DefaultKafkaEventsTopic,
-		KafkaResultsTopic:  DefaultKafkaResultsTopic,
-		KafkaDLQTopic:      DefaultKafkaDLQTopic,
+		Port:                DefaultPort,
+		RedisAddress:        DefaultRedisAddress,
+		KafkaBrokers:        DefaultKafkaBrokers,
+		RedisResultsChannel: DefaultRedisResultsChannel,
+		ShutdownTimeout:     DefaultShutdownTimeout,
+		KafkaEventsTopic:    DefaultKafkaEventsTopic,
+		KafkaResultsTopic:   DefaultKafkaResultsTopic,
+		KafkaDLQTopic:       DefaultKafkaDLQTopic,
 	}
 
 	// Read Port from environment variable
@@ -72,7 +72,7 @@ func Load() (*Config, error) {
 
 	// Read Redis Events Channel from environment variable
 	if redisChannel := os.Getenv("NIMBUS_REDIS_EVENTS_CHANNEL"); redisChannel != "" {
-		cfg.RedisEventsChannel = redisChannel
+		cfg.RedisResultsChannel = redisChannel
 	}
 
 	// Read Kafka Events topic from environment variable
@@ -105,7 +105,7 @@ func Load() (*Config, error) {
 		cfg.ShutdownTimeout = DefaultShutdownTimeout
 	}
 
-	log.Printf("[INFO] Configuration loaded: Port=%d, RedisAddress=%s, KafkaBrokers=%s, RedisEventsChannel=%s, KafkaEventsTopic=%s, KafkaResultsTopic=%s, ShutdownTimeout=%s",
-		cfg.Port, cfg.RedisAddress, cfg.KafkaBrokers, cfg.RedisEventsChannel, cfg.KafkaEventsTopic, cfg.KafkaResultsTopic, cfg.ShutdownTimeout)
+	log.Printf("[INFO] Configuration loaded: Port=%d, RedisAddress=%s, KafkaBrokers=%s, RedisResultsChannel=%s, KafkaEventsTopic=%s, KafkaResultsTopic=%s, ShutdownTimeout=%s",
+		cfg.Port, cfg.RedisAddress, cfg.KafkaBrokers, cfg.RedisResultsChannel, cfg.KafkaEventsTopic, cfg.KafkaResultsTopic, cfg.ShutdownTimeout)
 	return cfg, nil
 }

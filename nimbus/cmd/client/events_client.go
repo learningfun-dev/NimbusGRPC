@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"time"
 
 	pb "github.com/learningfun-dev/NimbusGRPC/nimbus/proto"
 	"google.golang.org/grpc/codes"
@@ -44,7 +45,7 @@ func sendRequests(ctx context.Context, stream pb.NimbusService_ProcessEventClien
 		}
 		log.Printf("[DEBUG] Client %s: Sent event for number: %d", clientID, i)
 		// Optional: Add a small delay if needed for rate limiting or observation
-		// time.Sleep(100 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 	}
 
 	// // After sending all requests, close the send direction of the stream.
@@ -58,7 +59,7 @@ func sendRequests(ctx context.Context, stream pb.NimbusService_ProcessEventClien
 }
 
 // receiveResponses receives event responses from the server.
-func receiveResponses(ctx context.Context, stream pb.NimbusService_ProcessEventClient, doneReceiving chan<- struct{}) {
+func receiveResponses(ctx context.Context, clientID string, stream pb.NimbusService_ProcessEventClient, doneReceiving chan<- struct{}) {
 	defer close(doneReceiving) // Signal that this goroutine is finished
 	log.Printf("[INFO] Client: Starting to receive responses from server.")
 
@@ -89,10 +90,22 @@ func receiveResponses(ctx context.Context, stream pb.NimbusService_ProcessEventC
 			log.Printf("[ERROR] Client: Failed to receive response from server: %v", err)
 			return // Exit on other errors
 		}
+
 		log.Printf("[INFO] Client: Received result from server: EventName=%s, Number=%d, Result=%d",
 			res.EventName, res.Number, res.Result)
+		// go writeResultToFile(clientID, res)
 	}
 }
+
+// func writeResultToFile(clientId string, resp *pb.EventResponse) {
+
+// 	fileName := "./vol-data/" + clientId + "/" + string(resp.Number) + ".json"
+// 	err := os.WriteFile(fileName, []byte(string(resp.Result)), 0644)
+// 	if err != nil {
+// 		log.Printf("[ERROR] writeResultToFile: error in writing to file %v\n", err)
+// 	}
+
+// }
 
 // sendAndReceiveEvents orchestrates the bidirectional streaming.
 func sendAndReceiveEvents(ctx context.Context, client pb.NimbusServiceClient, clientID string, start int, end int) error {
@@ -113,7 +126,7 @@ func sendAndReceiveEvents(ctx context.Context, client pb.NimbusServiceClient, cl
 	doneReceiving := make(chan struct{}) // Channel to signal completion of receiving
 
 	// Goroutine to receive responses
-	go receiveResponses(streamCtx, stream, doneReceiving) // Pass streamCtx to receiver
+	go receiveResponses(streamCtx, clientID, stream, doneReceiving) // Pass streamCtx to receiver
 
 	// Send requests in the current goroutine
 	// If sendRequests returns an error, we should log it and potentially stop waiting for responses

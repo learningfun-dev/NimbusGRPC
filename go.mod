@@ -4,6 +4,7 @@ go 1.24.3
 
 require (
 	github.com/confluentinc/confluent-kafka-go/v2 v2.10.0
+	github.com/google/uuid v1.6.0
 	github.com/joho/godotenv v1.5.1
 	github.com/redis/go-redis/v9 v9.9.0
 	google.golang.org/grpc v1.72.2

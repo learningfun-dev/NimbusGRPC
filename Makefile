@@ -92,7 +92,10 @@ start-kafka-consumer:
 	./bin/nimbus/cmd/kafkaconsumer
 
 start-client1:
-	./bin/nimbus/cmd/client --client_id=manoj --start=1 --end=1000
+	./bin/nimbus/cmd/client --client_id=manoj --start=1 --end=10
+
+start-client1_with_10000:
+	./bin/nimbus/cmd/client --client_id=manoj --start=1000 --end=10000
 
 standby-client1:
 	./bin/nimbus/cmd/client --client_id=manoj --start=0 --end=0

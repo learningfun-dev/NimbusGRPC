@@ -25,13 +25,7 @@ const (
 // NimbusServiceClient is the client API for NimbusService service.
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
-//
-// NimbusService defines the gRPC service for event processing.
 type NimbusServiceClient interface {
-	// ProcessEvent is a bidirectional streaming RPC.
-	// Clients send a stream of EventRequest messages and receive a stream of EventResponse messages.
-	// The server may process some events by publishing them to Kafka and then
-	// sending responses back on the stream when results are received via Redis.
 	ProcessEvent(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[EventRequest, EventResponse], error)
 }
 
@@ -59,13 +53,7 @@ type NimbusService_ProcessEventClient = grpc.BidiStreamingClient[EventRequest, E
 // NimbusServiceServer is the server API for NimbusService service.
 // All implementations must embed UnimplementedNimbusServiceServer
 // for forward compatibility.
-//
-// NimbusService defines the gRPC service for event processing.
 type NimbusServiceServer interface {
-	// ProcessEvent is a bidirectional streaming RPC.
-	// Clients send a stream of EventRequest messages and receive a stream of EventResponse messages.
-	// The server may process some events by publishing them to Kafka and then
-	// sending responses back on the stream when results are received via Redis.
 	ProcessEvent(grpc.BidiStreamingServer[EventRequest, EventResponse]) error
 	mustEmbedUnimplementedNimbusServiceServer()
 }

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/learningfun-dev/NimbusGRPC/nimbus/config"
+	"github.com/learningfun-dev/NimbusGRPC/nimbus/kafkaadmin"
 	"github.com/learningfun-dev/NimbusGRPC/nimbus/kafkaproducer"
 	pb "github.com/learningfun-dev/NimbusGRPC/nimbus/proto"
 	"github.com/learningfun-dev/NimbusGRPC/nimbus/redisclient"
@@ -59,6 +60,27 @@ func main() {
 		}
 	}()
 
+	// Initialize Kafka Admin Client
+	if err := kafkaadmin.InitAdminClient(cfg); err != nil {
+		log.Fatalf("[FATAL] Failed to initialize Kafka admin client: %v", err)
+	}
+	defer func() {
+		log.Println("[INFO] Closing Kafka admin client...")
+		kafkaadmin.CloseAdminClient()
+		log.Println("[INFO] Kafka admin client closed.")
+	}()
+
+	// Create kafka topics
+	topics := []string{
+		cfg.KafkaEventsTopic,
+		cfg.KafkaResultsTopic,
+		cfg.KafkaDLQTopic,
+	}
+
+	if err := kafkaadmin.CreateTopics(topics); err != nil {
+		log.Fatalf("[FATAL] Failed to create Kafka Topics: %v", err)
+	}
+
 	addr := fmt.Sprintf("0.0.0.0:%d", cfg.Port)
 	lis, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -75,7 +97,7 @@ func main() {
 	rdb := redisclient.GetClient()
 
 	// The ClientStreamManager (csm) implements the redisclient.StreamSender interface.
-	redisSub := redisclient.NewRedisSubscriber(rdb, cfg.RedisEventsChannel, csm)
+	redisSub := redisclient.NewRedisSubscriber(rdb, cfg.RedisResultsChannel, csm)
 
 	nimbusServer := &Server{
 		clientStreamManager: csm,

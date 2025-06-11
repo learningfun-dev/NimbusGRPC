@@ -21,13 +21,10 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-// EventRequest is the message sent by clients to the server.
 type EventRequest struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	// event_name specifies the type of event, e.g., "sq" for square.
-	EventName string `protobuf:"bytes,1,opt,name=event_name,json=eventName,proto3" json:"event_name,omitempty"`
-	// number is the input value for the event processing.
-	Number        int32 `protobuf:"varint,2,opt,name=number,proto3" json:"number,omitempty"`
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	EventName     string                 `protobuf:"bytes,1,opt,name=event_name,json=eventName,proto3" json:"event_name,omitempty"`
+	Number        int32                  `protobuf:"varint,2,opt,name=number,proto3" json:"number,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -76,16 +73,11 @@ func (x *EventRequest) GetNumber() int32 {
 	return 0
 }
 
-// EventResponse is the message sent by the server back to the client
-// after processing an event directly or via Redis callback.
 type EventResponse struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	// event_name mirrors the name from the request.
-	EventName string `protobuf:"bytes,1,opt,name=event_name,json=eventName,proto3" json:"event_name,omitempty"`
-	// number mirrors the input number from the request.
-	Number int32 `protobuf:"varint,2,opt,name=number,proto3" json:"number,omitempty"`
-	// result is the outcome of the event processing.
-	Result        int32 `protobuf:"varint,3,opt,name=result,proto3" json:"result,omitempty"`
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	EventName     string                 `protobuf:"bytes,1,opt,name=event_name,json=eventName,proto3" json:"event_name,omitempty"`
+	Number        int32                  `protobuf:"varint,2,opt,name=number,proto3" json:"number,omitempty"`
+	Result        int32                  `protobuf:"varint,3,opt,name=result,proto3" json:"result,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -141,36 +133,30 @@ func (x *EventResponse) GetResult() int32 {
 	return 0
 }
 
-// KafkaEventRequest is the message format used to send event details to a Kafka topic.
-// It includes routing information for the response.
-type KafkaEventRequest struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	// event_name specifies the type of event.
-	EventName string `protobuf:"bytes,1,opt,name=event_name,json=eventName,proto3" json:"event_name,omitempty"`
-	// number is the input value for the event processing.
-	Number int32 `protobuf:"varint,2,opt,name=number,proto3" json:"number,omitempty"`
-	// client_id identifies the originating client for response routing.
-	ClientId string `protobuf:"bytes,3,opt,name=client_id,json=clientId,proto3" json:"client_id,omitempty"`
-	// redis_channel is the Redis channel to which the processed result should be published.
-	RedisChannel  string `protobuf:"bytes,4,opt,name=redis_channel,json=redisChannel,proto3" json:"redis_channel,omitempty"`
+type KafkaEventReqest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	EventName     string                 `protobuf:"bytes,1,opt,name=event_name,json=eventName,proto3" json:"event_name,omitempty"`
+	Number        int32                  `protobuf:"varint,2,opt,name=number,proto3" json:"number,omitempty"`
+	ClientId      string                 `protobuf:"bytes,3,opt,name=client_id,json=clientId,proto3" json:"client_id,omitempty"`
+	RedisChannel  string                 `protobuf:"bytes,4,opt,name=redis_channel,json=redisChannel,proto3" json:"redis_channel,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *KafkaEventRequest) Reset() {
-	*x = KafkaEventRequest{}
+func (x *KafkaEventReqest) Reset() {
+	*x = KafkaEventReqest{}
 	mi := &file_nimbus_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *KafkaEventRequest) String() string {
+func (x *KafkaEventReqest) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*KafkaEventRequest) ProtoMessage() {}
+func (*KafkaEventReqest) ProtoMessage() {}
 
-func (x *KafkaEventRequest) ProtoReflect() protoreflect.Message {
+func (x *KafkaEventReqest) ProtoReflect() protoreflect.Message {
 	mi := &file_nimbus_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -182,54 +168,47 @@ func (x *KafkaEventRequest) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use KafkaEventRequest.ProtoReflect.Descriptor instead.
-func (*KafkaEventRequest) Descriptor() ([]byte, []int) {
+// Deprecated: Use KafkaEventReqest.ProtoReflect.Descriptor instead.
+func (*KafkaEventReqest) Descriptor() ([]byte, []int) {
 	return file_nimbus_proto_rawDescGZIP(), []int{2}
 }
 
-func (x *KafkaEventRequest) GetEventName() string {
+func (x *KafkaEventReqest) GetEventName() string {
 	if x != nil {
 		return x.EventName
 	}
 	return ""
 }
 
-func (x *KafkaEventRequest) GetNumber() int32 {
+func (x *KafkaEventReqest) GetNumber() int32 {
 	if x != nil {
 		return x.Number
 	}
 	return 0
 }
 
-func (x *KafkaEventRequest) GetClientId() string {
+func (x *KafkaEventReqest) GetClientId() string {
 	if x != nil {
 		return x.ClientId
 	}
 	return ""
 }
 
-func (x *KafkaEventRequest) GetRedisChannel() string {
+func (x *KafkaEventReqest) GetRedisChannel() string {
 	if x != nil {
 		return x.RedisChannel
 	}
 	return ""
 }
 
-// KafkaEventResponse is the message format expected from the system that processes Kafka events.
-// This message is typically published to Redis.
 type KafkaEventResponse struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	// event_name mirrors the name from the request.
-	EventName string `protobuf:"bytes,1,opt,name=event_name,json=eventName,proto3" json:"event_name,omitempty"`
-	// number mirrors the input number from the request.
-	Number int32 `protobuf:"varint,2,opt,name=number,proto3" json:"number,omitempty"`
-	// result is the outcome of the event processing.
-	Result int32 `protobuf:"varint,3,opt,name=result,proto3" json:"result,omitempty"`
-	// client_id identifies the originating client to send the gRPC response to.
-	ClientId string `protobuf:"bytes,4,opt,name=client_id,json=clientId,proto3" json:"client_id,omitempty"`
-	// redis_channel is the Redis channel from which this message was consumed (for logging/tracing).
-	// Optional: could be inferred or not needed if the consumer only listens to one channel for this purpose.
-	RedisChannel  string `protobuf:"bytes,5,opt,name=redis_channel,json=redisChannel,proto3" json:"redis_channel,omitempty"`
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	EventName     string                 `protobuf:"bytes,1,opt,name=event_name,json=eventName,proto3" json:"event_name,omitempty"`
+	Number        int32                  `protobuf:"varint,2,opt,name=number,proto3" json:"number,omitempty"`
+	Result        int32                  `protobuf:"varint,3,opt,name=result,proto3" json:"result,omitempty"`
+	ClientId      string                 `protobuf:"bytes,4,opt,name=client_id,json=clientId,proto3" json:"client_id,omitempty"`
+	RedisChannel  string                 `protobuf:"bytes,5,opt,name=redis_channel,json=redisChannel,proto3" json:"redis_channel,omitempty"`
+	KafkaOffset   int64                  `protobuf:"varint,6,opt,name=kafka_offset,json=kafkaOffset,proto3" json:"kafka_offset,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -299,6 +278,13 @@ func (x *KafkaEventResponse) GetRedisChannel() string {
 	return ""
 }
 
+func (x *KafkaEventResponse) GetKafkaOffset() int64 {
+	if x != nil {
+		return x.KafkaOffset
+	}
+	return 0
+}
+
 var File_nimbus_proto protoreflect.FileDescriptor
 
 const file_nimbus_proto_rawDesc = "" +
@@ -312,20 +298,21 @@ const file_nimbus_proto_rawDesc = "" +
 	"\n" +
 	"event_name\x18\x01 \x01(\tR\teventName\x12\x16\n" +
 	"\x06number\x18\x02 \x01(\x05R\x06number\x12\x16\n" +
-	"\x06result\x18\x03 \x01(\x05R\x06result\"\x8c\x01\n" +
-	"\x11KafkaEventRequest\x12\x1d\n" +
+	"\x06result\x18\x03 \x01(\x05R\x06result\"\x8b\x01\n" +
+	"\x10KafkaEventReqest\x12\x1d\n" +
 	"\n" +
 	"event_name\x18\x01 \x01(\tR\teventName\x12\x16\n" +
 	"\x06number\x18\x02 \x01(\x05R\x06number\x12\x1b\n" +
 	"\tclient_id\x18\x03 \x01(\tR\bclientId\x12#\n" +
-	"\rredis_channel\x18\x04 \x01(\tR\fredisChannel\"\xa5\x01\n" +
+	"\rredis_channel\x18\x04 \x01(\tR\fredisChannel\"\xc8\x01\n" +
 	"\x12KafkaEventResponse\x12\x1d\n" +
 	"\n" +
 	"event_name\x18\x01 \x01(\tR\teventName\x12\x16\n" +
 	"\x06number\x18\x02 \x01(\x05R\x06number\x12\x16\n" +
 	"\x06result\x18\x03 \x01(\x05R\x06result\x12\x1b\n" +
 	"\tclient_id\x18\x04 \x01(\tR\bclientId\x12#\n" +
-	"\rredis_channel\x18\x05 \x01(\tR\fredisChannel2P\n" +
+	"\rredis_channel\x18\x05 \x01(\tR\fredisChannel\x12!\n" +
+	"\fkafka_offset\x18\x06 \x01(\x03R\vkafkaOffset2P\n" +
 	"\rNimbusService\x12?\n" +
 	"\fProcessEvent\x12\x14.nimbus.EventRequest\x1a\x15.nimbus.EventResponse(\x010\x01B4Z2github.com/learningfun-dev/NimbusGRPC/nimbus/protob\x06proto3"
 
@@ -345,7 +332,7 @@ var file_nimbus_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
 var file_nimbus_proto_goTypes = []any{
 	(*EventRequest)(nil),       // 0: nimbus.EventRequest
 	(*EventResponse)(nil),      // 1: nimbus.EventResponse
-	(*KafkaEventRequest)(nil),  // 2: nimbus.KafkaEventRequest
+	(*KafkaEventReqest)(nil),   // 2: nimbus.KafkaEventReqest
 	(*KafkaEventResponse)(nil), // 3: nimbus.KafkaEventResponse
 }
 var file_nimbus_proto_depIdxs = []int32{

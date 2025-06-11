@@ -4,60 +4,34 @@ package nimbus;
 
 option go_package = "github.com/learningfun-dev/NimbusGRPC/nimbus/proto";
 
-// EventRequest is the message sent by clients to the server.
+
 message EventRequest {
-    // event_name specifies the type of event, e.g., "sq" for square.
     string event_name = 1;
-    // number is the input value for the event processing.
     int32 number = 2;
 }
 
-// EventResponse is the message sent by the server back to the client
-// after processing an event directly or via Redis callback.
 message EventResponse {
-    // event_name mirrors the name from the request.
     string event_name = 1;
-    // number mirrors the input number from the request.
     int32 number = 2;
-    // result is the outcome of the event processing.
     int32 result = 3;
 }
 
-// KafkaEventRequest is the message format used to send event details to a Kafka topic.
-// It includes routing information for the response.
-message KafkaEventRequest {
-    // event_name specifies the type of event.
+message KafkaEventReqest {
     string event_name = 1;
-    // number is the input value for the event processing.
     int32 number = 2;
-    // client_id identifies the originating client for response routing.
-    string client_id = 3;
-    // redis_channel is the Redis channel to which the processed result should be published.
-    string redis_channel = 4;
+    string client_id= 3;
+    string redis_channel=4;
 }
 
-// KafkaEventResponse is the message format expected from the system that processes Kafka events.
-// This message is typically published to Redis.
 message KafkaEventResponse {
-    // event_name mirrors the name from the request.
     string event_name = 1;
-    // number mirrors the input number from the request.
     int32 number = 2;
-    // result is the outcome of the event processing.
     int32 result = 3;
-    // client_id identifies the originating client to send the gRPC response to.
-    string client_id = 4;
-    // redis_channel is the Redis channel from which this message was consumed (for logging/tracing).
-    // Optional: could be inferred or not needed if the consumer only listens to one channel for this purpose.
-    string redis_channel = 5;
+    string client_id= 4;
+    string redis_channel=5;
+    int64 kafka_offset = 6;
 }
 
-// NimbusService defines the gRPC service for event processing.
-service NimbusService {
-    // ProcessEvent is a bidirectional streaming RPC.
-    // Clients send a stream of EventRequest messages and receive a stream of EventResponse messages.
-    // The server may process some events by publishing them to Kafka and then
-    // sending responses back on the stream when results are received via Redis.
-    rpc ProcessEvent (stream EventRequest) returns (stream EventResponse);
+service NimbusService{
+    rpc  ProcessEvent (stream EventRequest) returns (stream EventResponse);
 }
-

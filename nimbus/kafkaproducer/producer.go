@@ -1,6 +1,7 @@
 package kafkaproducer
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"sync"
@@ -137,7 +138,7 @@ func sendMessageInternal(topic string, messageKey string, messagePayload proto.M
 }
 
 // PublishEventRequest sends a KafkaEventRequest to the specified Kafka topic, using the clientID as the key.
-func PublishEventRequest(topic string, req *pb.KafkaEventRequest) error {
+func PublishEventRequest(topic string, req *pb.KafkaEventReqest) error {
 	if !isInitialized {
 		return fmt.Errorf("kafka producer not initialized, cannot publish event request")
 	}
@@ -161,7 +162,7 @@ func PublishEventResponse(topic string, resp *pb.KafkaEventResponse) error {
 }
 
 // SendEventToDefaultTopic sends a KafkaEventRequest to the default events topic, using the clientID as the key.
-func SendEventToDefaultTopic(req *pb.KafkaEventRequest) error {
+func SendEventToDefaultTopic(req *pb.KafkaEventReqest) error {
 	if !isInitialized {
 		return fmt.Errorf("kafka producer not initialized, cannot send event to default topic")
 	}
@@ -205,4 +206,25 @@ func CloseProducer(timeout time.Duration) {
 	producer = nil
 	log.Println("[INFO] KafkaProducer: Producer closed.")
 	producerMutex.Unlock()
+}
+
+func GetPartitionEndOffset(ctx context.Context, topic string, partition int32) (int64, error) {
+	producerMutex.Lock()
+	if !isInitialized {
+		producerMutex.Unlock()
+		return -1, fmt.Errorf("kafka producer not initialized")
+	}
+	currentProducer := producer
+	producerMutex.Unlock()
+
+	// Use a reasonable timeout for the query.
+	timeoutMs := 3000
+
+	// The correct function on the Producer is QueryWatermarkOffsets.
+	_, high, err := currentProducer.QueryWatermarkOffsets(topic, partition, timeoutMs)
+	if err != nil {
+		return -1, fmt.Errorf("could not query watermark offset for topic %s partition %d: %w", topic, partition, err)
+	}
+
+	return high, nil
 }

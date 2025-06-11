@@ -145,7 +145,7 @@ func (rs *RedisSubscriber) Start(ctx context.Context) {
 }
 
 func (rs *RedisSubscriber) processRedisMessage(payload string) {
-	var kafkaEventResp pb.KafkaEventResponse // Use your actual proto message type
+	var kafkaEventResp pb.KafkaEventResponse
 	if err := proto.Unmarshal([]byte(payload), &kafkaEventResp); err != nil {
 		log.Printf("[ERROR] RedisSubscriber: Error decoding Redis message payload on channel '%s': %v. Payload: %s", rs.channel, err, payload)
 		return // Skip malformed messages
@@ -154,14 +154,31 @@ func (rs *RedisSubscriber) processRedisMessage(payload string) {
 	log.Printf("[INFO] RedisSubscriber: Decoded KafkaEventResponse from channel '%s' for clientID: %s, Event: %s, Number: %d, Result: %d",
 		rs.channel, kafkaEventResp.ClientId, kafkaEventResp.EventName, kafkaEventResp.Number, kafkaEventResp.Result)
 
+	// Prepare the final response to send to the gRPC client.
 	eventResp := &pb.EventResponse{
 		EventName: kafkaEventResp.EventName,
 		Number:    kafkaEventResp.Number,
 		Result:    kafkaEventResp.Result,
 	}
 
-	if err := rs.streamManager.SendToClient(kafkaEventResp.ClientId, eventResp); err != nil {
-		log.Printf("[ERROR] RedisSubscriber: Failed to send EventResponse via StreamManager for clientID %s from channel '%s': %v", kafkaEventResp.ClientId, rs.channel, err)
-		// Decide if any action is needed, e.g., if the client is persistently unavailable.
+	// Send the message to the client via the stream manager.
+	err := rs.streamManager.SendToClient(kafkaEventResp.ClientId, eventResp)
+	if err != nil {
+		log.Printf("[ERROR] RedisSubscriber: Failed to send EventResponse to client '%s': %v", kafkaEventResp.ClientId, err)
+		return // If send fails, we cannot ACK. The ReplayConsumer will time out and retry.
+	}
+
+	// MODIFIED: This is the new ACK logic.
+	// Check if this was a replayed message (indicated by a positive offset).
+	if kafkaEventResp.KafkaOffset > 0 {
+		ackKey := kafkaEventResp.ClientId + "-last-acked-offset"
+		// Acknowledge the specific offset that was successfully delivered.
+		err = SetKeyValue(context.Background(), ackKey, kafkaEventResp.KafkaOffset)
+		if err != nil {
+			log.Printf("[CRITICAL] RedisSubscriber: FAILED TO SEND ACK for client '%s', offset %d. This may cause a duplicate message. Error: %v",
+				kafkaEventResp.ClientId, kafkaEventResp.KafkaOffset, err)
+		} else {
+			log.Printf("[INFO] RedisSubscriber: Sent ACK for client '%s', offset %d.", kafkaEventResp.ClientId, kafkaEventResp.KafkaOffset)
+		}
 	}
 }
