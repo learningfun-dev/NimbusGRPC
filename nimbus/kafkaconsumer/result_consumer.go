@@ -129,7 +129,7 @@ func (rc *ResultConsumer) Start(ctx context.Context) {
 	log.Printf("[INFO] ResultConsumer: Message consumption loop stopped for topic '%s'.", rc.appConfig.KafkaResultsTopic)
 }
 
-// It now returns an error to signal success or failure of the operation.
+// routeOrDivertResult implements the core routing logic, now with location validation.
 func (rc *ResultConsumer) routeOrDivertResult(ctx context.Context, resp *pb.KafkaEventResponse) error {
 	if resp.ClientId == "" {
 		log.Printf("[WARN] ResultConsumer: Received a result with an empty ClientId. Discarding message: %+v", resp)
@@ -138,23 +138,36 @@ func (rc *ResultConsumer) routeOrDivertResult(ctx context.Context, resp *pb.Kafk
 
 	statusKey := resp.ClientId + "-status"
 	clientStatus, err := redisclient.GetKeyValue(ctx, statusKey)
-
-	// Case 1: Redis error. We can't know the client's status. Return an error to trigger a retry.
 	if err != nil && !errors.Is(err, redis.Nil) {
-		log.Printf("[ERROR] ResultConsumer: Could not get status for client '%s' from Redis. Error: %v. Retrying...", resp.ClientId, err)
-		return err // Return the error to prevent offset commit.
+		return fmt.Errorf("could not get client status from Redis: %w", err)
 	}
 
-	// Case 2: Client status is NOT "LIVE". This means the client is offline (key is missing)
+	// Case 1: Client status is NOT "LIVE". This means the client is offline (key is missing)
 	// OR the client is explicitly in a non-live state (like REPLAYING). Divert to DLQ.
 	if clientStatus != REDIS_CLIENT_STATUS_LIVE {
 		log.Printf("[INFO] ResultConsumer: Client '%s' status is '%s' (not LIVE). Diverting result to DLQ.", resp.ClientId, clientStatus)
-		return rc.publishToDLQ(ctx, resp) // Return the result of the publish operation.
+		return rc.publishToDLQ(ctx, resp)
 	}
 
-	// Case 3: Confirmed client's status is "LIVE". Publish to their pod's Redis channel.
-	log.Printf("[INFO] ResultConsumer: Client '%s' status is LIVE. Publishing result to Redis channel '%s'.", resp.ClientId, resp.RedisChannel)
-	return rc.publishToRedis(ctx, resp) // Return the result of the publish operation.
+	// Case 2: Status is LIVE. We must now verify the location.
+	locationKey := resp.ClientId + "-location"
+	currentLocation, err := redisclient.GetKeyValue(ctx, locationKey)
+	if err != nil {
+		// If status is LIVE but there's no location, something is inconsistent. Divert to DLQ to be safe.
+		log.Printf("[WARN] ResultConsumer: Inconsistency for client '%s'. Status is LIVE but no location key found. Diverting to DLQ. Error: %v", resp.ClientId, err)
+		return rc.publishToDLQ(ctx, resp)
+	}
+
+	// Compare the message's routing info with the source of truth in Redis.
+	if currentLocation != resp.RedisChannel {
+		// The message is stale. The client has moved. Divert to DLQ.
+		log.Printf("[INFO] ResultConsumer: Stale message for client '%s'. Current location is '%s', but message is for old channel '%s'. Diverting to DLQ.", resp.ClientId, currentLocation, resp.RedisChannel)
+		return rc.publishToDLQ(ctx, resp)
+	}
+
+	// Case 3: Status is LIVE and location matches. It's safe to publish to Redis.
+	log.Printf("[INFO] ResultConsumer: Client '%s' is LIVE at location '%s'. Publishing result.", resp.ClientId, currentLocation)
+	return rc.publishToRedis(ctx, resp)
 }
 
 func (rc *ResultConsumer) publishToDLQ(ctx context.Context, resp *pb.KafkaEventResponse) error {

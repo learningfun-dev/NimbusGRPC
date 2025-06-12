@@ -2,15 +2,14 @@ package kafkaconsumer
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/learningfun-dev/NimbusGRPC/nimbus/config"
+	"github.com/learningfun-dev/NimbusGRPC/nimbus/kafkaadmin"
 	"github.com/learningfun-dev/NimbusGRPC/nimbus/redisclient"
 	"github.com/redis/go-redis/v9"
 )
@@ -69,9 +68,8 @@ func (sm *StatusManager) Start(ctx context.Context) {
 	}
 }
 
-// checkAndTransitionClients implements the "Offset-Based Replay Completion" pattern.
+// checkAndTransitionClients implements the "Dual Lag Check" pattern.
 func (sm *StatusManager) checkAndTransitionClients(ctx context.Context) error {
-	// 1. Scan Redis for all clients in the REPLAYING state.
 	replayingClients, err := sm.findReplayingClients(ctx)
 	if err != nil {
 		return fmt.Errorf("could not scan for replaying clients: %w", err)
@@ -82,42 +80,46 @@ func (sm *StatusManager) checkAndTransitionClients(ctx context.Context) error {
 		return nil
 	}
 
-	log.Printf("[INFO] StatusManager: Found %d clients in REPLAYING state. Checking offset progress...", len(replayingClients))
+	log.Printf("[INFO] StatusManager: Found %d clients in REPLAYING state. Checking Kafka consumer group lags...", len(replayingClients))
 
-	// 2. For each replaying client, compare their last ACKed offset to their target offset.
 	for _, clientID := range replayingClients {
-		targetOffsetKey := clientID + redisTargetOffsetKeySuffix
-		lastAckedOffsetKey := clientID + redisLastAckedOffsetKeySuffix
+		// --- The New Logic ---
+		// A client's replay is complete only when the lag for THEIR partition is zero
+		// in BOTH the results topic (for new messages) AND the DLQ topic (for old messages).
 
-		// Get the target offset (the "finish line").
-		targetOffsetStr, err := redisclient.GetKeyValue(ctx, targetOffsetKey)
+		// Condition A: Check lag on the live results topic.
+		resultsPartition, err := kafkaadmin.GetPartitionForClientKey(ctx, sm.appConfig.KafkaResultsTopic, clientID)
 		if err != nil {
-			log.Printf("[WARN] StatusManager: Could not get target offset for replaying client '%s'. Skipping. Error: %v", clientID, err)
+			log.Printf("[WARN] StatusManager: Could not get partition for client '%s' on results topic. Skipping.", clientID)
 			continue
 		}
-		targetOffset, _ := strconv.ParseInt(targetOffsetStr, 10, 64)
-
-		// Get the last offset the client has acknowledged.
-		lastAckedOffsetStr, err := redisclient.GetKeyValue(ctx, lastAckedOffsetKey)
-		if err != nil && !errors.Is(err, redis.Nil) {
-			log.Printf("[WARN] StatusManager: Could not get last ACKed offset for replaying client '%s'. Skipping. Error: %v", clientID, err)
+		resultsLag, err := kafkaadmin.GetPartitionLag(ctx, "nimbus-results-publisher-group", sm.appConfig.KafkaResultsTopic, resultsPartition)
+		if err != nil {
+			log.Printf("[WARN] StatusManager: Could not get lag for client '%s' on results topic. Skipping. Error: %v", clientID, err)
 			continue
 		}
-		lastAckedOffset, _ := strconv.ParseInt(lastAckedOffsetStr, 10, 64)
 
-		// 3. Make the decision.
-		if lastAckedOffset >= targetOffset {
-			log.Printf("[INFO] StatusManager: Replay for client '%s' is complete (acked: %d >= target: %d). Transitioning status to LIVE.", clientID, lastAckedOffset, targetOffset)
+		// Condition B: Check lag on the DLQ topic.
+		dlqPartition, err := kafkaadmin.GetPartitionForClientKey(ctx, sm.appConfig.KafkaDLQTopic, clientID)
+		if err != nil {
+			log.Printf("[WARN] StatusManager: Could not get partition for client '%s' on DLQ topic. Skipping.", clientID)
+			continue
+		}
+		dlqLag, err := kafkaadmin.GetPartitionLag(ctx, "nimbus-replay-service-group", sm.appConfig.KafkaDLQTopic, dlqPartition)
+		if err != nil {
+			log.Printf("[WARN] StatusManager: Could not get lag for client '%s' on DLQ topic. Skipping. Error: %v", clientID, err)
+			continue
+		}
+
+		log.Printf("[DEBUG] StatusManager: Client '%s' lags -> ResultsTopic: %d, DLQTopic: %d", clientID, resultsLag, dlqLag)
+
+		// Decision: If both lags are zero, the system is fully caught up for this client.
+		if resultsLag == 0 && dlqLag == 0 {
+			log.Printf("[INFO] StatusManager: Replay for client '%s' is complete (both topic lags are 0). Transitioning status to LIVE.", clientID)
 			err := sm.transitionClientToLive(ctx, clientID)
 			if err != nil {
 				log.Printf("[ERROR] StatusManager: Failed to transition client '%s' to LIVE: %v", clientID, err)
-			} else {
-				// Cleanup the state keys for this replay session.
-				_ = redisclient.DeleteKey(ctx, targetOffsetKey)
-				_ = redisclient.DeleteKey(ctx, lastAckedOffsetKey)
 			}
-		} else {
-			log.Printf("[DEBUG] StatusManager: Replay for client '%s' is still in progress (acked: %d < target: %d).", clientID, lastAckedOffset, targetOffset)
 		}
 	}
 

@@ -119,17 +119,13 @@ func (rc *ReplayConsumer) Start(ctx context.Context) {
 				continue
 			}
 
-			// If we are the first to see a message for this client, start a new goroutine to process it.
-			rc.wg.Add(1)
-			go rc.processMessageAsynchronously(ctx, msg)
+			rc.processMessage(ctx, msg)
 		}
 	}
 	log.Printf("[INFO] ReplayConsumer: Message consumption loop stopped for topic '%s'.", rc.appConfig.KafkaDLQTopic)
 }
 
-// processMessageAsynchronously handles the entire lifecycle of a single message in a separate goroutine.
-func (rc *ReplayConsumer) processMessageAsynchronously(ctx context.Context, msg *kafka.Message) {
-	defer rc.wg.Done()
+func (rc *ReplayConsumer) processMessage(ctx context.Context, msg *kafka.Message) {
 	clientID := string(msg.Key)
 
 	// IMPORTANT: Ensure we unlock this client for future messages, no matter what happens.

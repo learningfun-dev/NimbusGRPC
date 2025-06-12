@@ -85,22 +85,99 @@ func GetPartitionForClientKey(ctx context.Context, topic string, key string) (in
 	return partition, nil
 }
 
+// CreateTopics is a utility function to create topics if they don't exist.
 func CreateTopics(topics []string) error {
 	ac := GetAdminClient()
-	kafkaTopics := []kafka.TopicSpecification{}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
+	var kafkaTopics []kafka.TopicSpecification
 	for _, topic := range topics {
 		kafkaTopics = append(kafkaTopics, kafka.TopicSpecification{
-			Topic:         topic,
-			NumPartitions: 8,
+			Topic:             topic,
+			NumPartitions:     8, // Defaulting to 8 partitions, can be made configurable
+			ReplicationFactor: 1, // Suitable for local testing, should be 3 for production
 		})
 	}
-	ctx := context.Background()
-	result, err := ac.CreateTopics(ctx, kafkaTopics)
+
+	results, err := ac.CreateTopics(ctx, kafkaTopics)
 	if err != nil {
-		log.Printf("[ERROR] KafkaAdmin: could not create topics %v: %w", topics, err)
-		return fmt.Errorf("KafkaAdmin: could not create topics %v: %w", topics, err)
+		return fmt.Errorf("failed to create topics command: %w", err)
 	}
-	log.Printf("[INFO] KafkaAdmin: Topics creation results %v", result)
+
+	for _, result := range results {
+		if result.Error.Code() != kafka.ErrNoError && result.Error.Code() != kafka.ErrTopicAlreadyExists {
+			return fmt.Errorf("failed to create topic %s: %v", result.Topic, result.Error)
+		}
+		log.Printf("[INFO] KafkaAdmin: Topic creation result for '%s': %s", result.Topic, result.Error.String())
+	}
+
 	return nil
+}
+
+// GetPartitionLag calculates the consumer lag for a specific group on a specific topic/partition.
+func GetPartitionLag(ctx context.Context, groupID, topic string, partition int32) (int64, error) {
+	ac := GetAdminClient()
+	ctxWithTimeout, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	result, err := ac.ListConsumerGroupOffsets(ctxWithTimeout, []kafka.ConsumerGroupTopicPartitions{
+		{
+			Group: groupID,
+			Partitions: []kafka.TopicPartition{
+				{Topic: &topic, Partition: partition},
+			},
+		},
+	})
+	if err != nil {
+		return -1, fmt.Errorf("failed to list group offsets: %w", err)
+	}
+
+	var committedOffset kafka.Offset = -1
+	if len(result.ConsumerGroupsTopicPartitions) > 0 {
+		for _, p := range result.ConsumerGroupsTopicPartitions[0].Partitions {
+			if p.Topic != nil && *p.Topic == topic && p.Partition == partition {
+				committedOffset = p.Offset
+				break
+			}
+		}
+	}
+
+	// CORRECTED: Get metadata properly to find a broker address.
+	md, err := ac.GetMetadata(nil, false, 5000) // Get metadata for all topics to find brokers
+	if err != nil {
+		return -1, fmt.Errorf("failed to get cluster metadata to create temp producer: %w", err)
+	}
+	if len(md.Brokers) == 0 {
+		return -1, fmt.Errorf("no brokers found in cluster metadata")
+	}
+
+	brokerAddress := fmt.Sprintf("%s:%d", md.Brokers[0].Host, md.Brokers[0].Port)
+	p, err := kafka.NewProducer(&kafka.ConfigMap{"bootstrap.servers": brokerAddress})
+	if err != nil {
+		return -1, fmt.Errorf("failed to create temporary producer for offset query: %w", err)
+	}
+	defer p.Close()
+
+	_, high, err := p.QueryWatermarkOffsets(topic, partition, 3000)
+	if err != nil {
+		return -1, fmt.Errorf("could not query watermark offset: %w", err)
+	}
+
+	// CORRECTED: Check if the offset is a numerical value. Logical offsets are negative.
+	if int64(committedOffset) < 0 {
+		// If no offset has been committed, the lag is the total number of messages in the partition.
+		low, _, err := p.QueryWatermarkOffsets(topic, partition, 3000)
+		if err != nil {
+			return -1, fmt.Errorf("could not query low watermark offset: %w", err)
+		}
+		return high - low, nil
+	}
+
+	lag := high - int64(committedOffset)
+	if lag < 0 {
+		return 0, nil // Lag cannot be negative.
+	}
+
+	return lag, nil
 }

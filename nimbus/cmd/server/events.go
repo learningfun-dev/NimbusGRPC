@@ -9,7 +9,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/learningfun-dev/NimbusGRPC/nimbus/kafkaadmin"
 	"github.com/learningfun-dev/NimbusGRPC/nimbus/kafkaproducer"
 	pb "github.com/learningfun-dev/NimbusGRPC/nimbus/proto"
 	"github.com/learningfun-dev/NimbusGRPC/nimbus/redisclient"
@@ -115,72 +114,39 @@ func (csm *ClientStreamManager) SendToClient(clientID string, resp *pb.EventResp
 // handleClientConnection sets up the initial state for a client in Redis
 // and implements the "Dam and Drain" logic.
 func (s *Server) handleClientConnection(ctx context.Context, clientID string) error {
+	newPodChannel := s.appConfig.RedisResultsChannel
 	statusKey := clientID + redisStatusKeySuffix
+	locationKey := clientID + redisLocationKeySuffix
 
-	// Check the client's current status BEFORE setting anything.
-	currentStatus, err := redisclient.GetKeyValue(ctx, statusKey)
-
-	// Handle potential Redis errors first.
+	// Get the client's PREVIOUS location before we do anything else.
+	previousLocation, err := redisclient.GetKeyValue(ctx, locationKey)
 	if err != nil && !errors.Is(err, redis.Nil) {
-		return status.Errorf(codes.Internal, "failed to get client status: %v", err)
+		return status.Errorf(codes.Internal, "failed to get previous client location: %v", err)
 	}
 
-	// This is the core logic change.
-	// If the key doesn't exist (err is redis.Nil), it's a brand new client.
-	if errors.Is(err, redis.Nil) {
-		log.Printf("[INFO] ProcessEvent: New client detected '%s'. Setting status to LIVE.", clientID)
-		// For a new client, just set their status to LIVE and their location.
-		if err := redisclient.SetKeyValue(ctx, statusKey, REDIS_CLIENT_STATUS_LIVE); err != nil {
-			return status.Errorf(codes.Internal, "failed to set new client status to LIVE: %v", err)
-		}
-		if err := redisclient.SetKeyValue(ctx, clientID+redisLocationKeySuffix, s.appConfig.RedisResultsChannel); err != nil {
-			return status.Errorf(codes.Internal, "failed to set new client location: %v", err)
-		}
-		return nil // New client is ready to go.
-	}
+	isNewConnection := errors.Is(err, redis.Nil)
+	isDifferentPod := !isNewConnection && (previousLocation != newPodChannel)
 
-	// If we are here, the client already has a status.
-	// If the existing status is not LIVE, it's a reconnection that needs a replay.
-	if currentStatus != REDIS_CLIENT_STATUS_LIVE {
-		log.Printf("[INFO] ProcessEvent: Reconnection detected for client '%s'. Initiating replay.", clientID)
-
-		// Set client's new location.
-		if err := redisclient.SetKeyValue(ctx, clientID+redisLocationKeySuffix, s.appConfig.RedisResultsChannel); err != nil {
-			return status.Errorf(codes.Internal, "failed to set reconnecting client location: %v", err)
-		}
-
-		// The "Dam and Drain" Logic for Reconnection
-		// 1. Build the Dam: Ensure status is REPLAYING.
+	// --- TRIGGER REPLAY: If the client was connected before, but to a DIFFERENT pod/channel. ---
+	if isDifferentPod {
+		log.Printf("[INFO] ProcessEvent: Reconnection to a new pod detected for client '%s'. Initiating replay.", clientID)
+		// The "Dam and Drain" Logic: Just set the status to REPLAYING.
+		// The StatusManager is now responsible for determining when the replay is truly complete.
 		if err := redisclient.SetKeyValue(ctx, statusKey, REDIS_CLIENT_STATUS_REPLAY); err != nil {
 			return status.Errorf(codes.Internal, "failed to set client status to REPLAYING: %v", err)
 		}
+	} else if isNewConnection {
+		// --- NO REPLAY NEEDED: This is a brand new client. ---
+		log.Printf("[INFO] ProcessEvent: New client detected '%s'. Setting status to LIVE.", clientID)
+		if err := redisclient.SetKeyValue(ctx, statusKey, REDIS_CLIENT_STATUS_LIVE); err != nil {
+			return status.Errorf(codes.Internal, "failed to set client status to LIVE: %v", err)
+		}
+	}
+	// If it's a reconnect to the same pod, we do nothing to the status, just update the location.
 
-		// 2. Determine the client's partition in the DLQ.
-		dlqTopic := s.appConfig.KafkaDLQTopic
-		partition, err := kafkaadmin.GetPartitionForClientKey(ctx, dlqTopic, clientID)
-		if err != nil {
-			return status.Errorf(codes.Internal, "failed to determine replay partition: %v", err)
-		}
-
-		// 3. Get the "Finish Line" Offset.
-		targetOffset, err := kafkaproducer.GetPartitionEndOffset(ctx, dlqTopic, partition)
-		if err != nil {
-			return status.Errorf(codes.Internal, "failed to get replay target offset: %v", err)
-		}
-
-		// 4. Store the Finish Line in Redis.
-		err = redisclient.SetKeyValue(ctx, clientID+redisTargetOffsetKeySuffix, targetOffset)
-		if err != nil {
-			return status.Errorf(codes.Internal, "failed to set replay target offset: %v", err)
-		}
-		log.Printf("[INFO] ProcessEvent: Replay target for client '%s' set to offset %d.", clientID, targetOffset)
-	} else {
-		// The client was already marked as LIVE, maybe due to a fast reconnect.
-		// Just update their location.
-		log.Printf("[INFO] ProcessEvent: Client '%s' is already LIVE. Updating location.", clientID)
-		if err := redisclient.SetKeyValue(ctx, clientID+redisLocationKeySuffix, s.appConfig.RedisResultsChannel); err != nil {
-			return status.Errorf(codes.Internal, "failed to update LIVE client location: %v", err)
-		}
+	// Always update the location to the current pod channel.
+	if err := redisclient.SetKeyValue(ctx, locationKey, newPodChannel); err != nil {
+		return status.Errorf(codes.Internal, "failed to update client location: %v", err)
 	}
 
 	return nil

@@ -71,25 +71,25 @@ func main() {
 	defer resultConsumer.Shutdown() // Ensure consumer is shutdown
 	log.Println("[INFO] Main: EventConsumer and ResultConsumer started. Waiting for signals...")
 
-	// // Create and start ReplayConsumer
-	// wg.Add(1)
-	// replayConsumer, err := kafkaconsumer.NewReplayConsumer(cfg, &wg)
-	// if err != nil {
-	// 	log.Fatalf("[FATAL] Failed to create ReplayConsumer: %v", err)
-	// }
-	// go replayConsumer.Start(ctx)
-	// defer replayConsumer.Shutdown() // Ensure consumer is shutdown
+	// Create and start ReplayConsumer
+	wg.Add(1)
+	replayConsumer, err := kafkaconsumer.NewReplayConsumer(cfg, &wg)
+	if err != nil {
+		log.Fatalf("[FATAL] Failed to create ReplayConsumer: %v", err)
+	}
+	go replayConsumer.Start(ctx)
+	defer replayConsumer.Shutdown() // Ensure consumer is shutdown
 
-	// // Create and start StatusManager
-	// wg.Add(1)
-	// statusManager, err := kafkaconsumer.NewStatusManager(cfg, &wg)
-	// if err != nil {
-	// 	log.Fatalf("[FATAL] Failed to create StatusManager: %v", err)
-	// }
-	// go statusManager.Start(ctx)
-	// defer statusManager.Shutdown() // Ensure consumer is shutdown
+	// Create and start StatusManager
+	wg.Add(1)
+	statusManager, err := kafkaconsumer.NewStatusManager(cfg, &wg)
+	if err != nil {
+		log.Fatalf("[FATAL] Failed to create StatusManager: %v", err)
+	}
+	go statusManager.Start(ctx)
+	defer statusManager.Shutdown() // Ensure consumer is shutdown
 
-	// log.Println("[INFO] Main: ReplayConsumer and StatusManager started. Waiting for signals...")
+	log.Println("[INFO] Main: ReplayConsumer and StatusManager started. Waiting for signals...")
 
 	// Graceful shutdown handling
 	sigChan := make(chan os.Signal, 1)
