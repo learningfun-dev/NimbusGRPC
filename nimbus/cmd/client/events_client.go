@@ -99,6 +99,8 @@ func receiveResponses(ctx context.Context, clientID string, stream pb.NimbusServ
 			Int32("number", res.Number).
 			Int32("result", res.Result).
 			Msg("Received result from server")
+
+		// DEBUG: log the message recived as file
 		writeResultToFile(clientID, res)
 	}
 }

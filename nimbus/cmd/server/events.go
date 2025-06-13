@@ -25,6 +25,7 @@ const (
 	redisLastAckedOffsetKeySuffix = "-last-acked-offset"
 	REDIS_CLIENT_STATUS_LIVE      = "LIVE"
 	REDIS_CLIENT_STATUS_REPLAY    = "REPLAYING"
+	REDIS_CLIENT_STATUS_OFFLINE   = "OFFLINE"
 )
 
 // ClientStream represents a connected client's stream.
@@ -114,26 +115,32 @@ func (s *Server) handleClientConnection(ctx context.Context, clientID string) er
 	statusKey := clientID + redisStatusKeySuffix
 	locationKey := clientID + redisLocationKeySuffix
 
-	previousLocation, err := redisclient.GetKeyValue(ctx, locationKey)
+	// Check the client's current status BEFORE setting anything.
+	currentStatus, err := redisclient.GetKeyValue(ctx, statusKey)
 	if err != nil && !errors.Is(err, redis.Nil) {
-		return status.Errorf(codes.Internal, "failed to get previous client location: %v", err)
+		return status.Errorf(codes.Internal, "failed to get client status: %v", err)
 	}
 
-	isNewConnection := errors.Is(err, redis.Nil)
-	isDifferentPod := !isNewConnection && (previousLocation != newPodChannel)
-
-	if isDifferentPod {
-		log.Info().Str("clientID", clientID).Msg("Reconnection to a new pod detected. Initiating replay.")
-		if err := redisclient.SetKeyValue(ctx, statusKey, REDIS_CLIENT_STATUS_REPLAY); err != nil {
-			return status.Errorf(codes.Internal, "failed to set client status to REPLAYING: %v", err)
+	// If status is not LIVE (it's OFFLINE, REPLAYING, or NIL), we need to start/continue the replay process.
+	if currentStatus != REDIS_CLIENT_STATUS_LIVE {
+		if errors.Is(err, redis.Nil) {
+			log.Info().Str("clientID", clientID).Msg("New client detected. Setting status to LIVE.")
+			// For a brand new client, just set their status to LIVE.
+			if err := redisclient.SetKeyValue(ctx, statusKey, REDIS_CLIENT_STATUS_LIVE); err != nil {
+				return status.Errorf(codes.Internal, "failed to set new client status to LIVE: %v", err)
+			}
+		} else {
+			// This is a returning client who was offline. Initiate replay.
+			log.Info().Str("clientID", clientID).Str("previousStatus", currentStatus).Msg("Reconnection detected. Initiating replay.")
+			if err := redisclient.SetKeyValue(ctx, statusKey, REDIS_CLIENT_STATUS_REPLAY); err != nil {
+				return status.Errorf(codes.Internal, "failed to set client status to REPLAYING: %v", err)
+			}
 		}
-	} else if isNewConnection {
-		log.Info().Str("clientID", clientID).Msg("New client detected. Setting status to LIVE.")
-		if err := redisclient.SetKeyValue(ctx, statusKey, REDIS_CLIENT_STATUS_LIVE); err != nil {
-			return status.Errorf(codes.Internal, "failed to set new client status to LIVE: %v", err)
-		}
+	} else {
+		log.Info().Str("clientID", clientID).Msg("Client is already LIVE. No replay needed.")
 	}
 
+	// Always update the location to the current pod channel.
 	if err := redisclient.SetKeyValue(ctx, locationKey, newPodChannel); err != nil {
 		return status.Errorf(codes.Internal, "failed to update client location: %v", err)
 	}
@@ -145,6 +152,11 @@ func (s *Server) handleClientConnection(ctx context.Context, clientID string) er
 func (s *Server) handleClientDisconnection(clientID string) {
 	cleanupCtx := context.Background()
 	log.Info().Str("clientID", clientID).Msg("Disconnecting client. Cleaning up Redis state.")
+
+	// Set status to OFFLINE so the next connection triggers a replay check.
+	if err := redisclient.SetKeyValue(cleanupCtx, clientID+redisStatusKeySuffix, REDIS_CLIENT_STATUS_OFFLINE); err != nil {
+		log.Error().Err(err).Str("clientID", clientID).Msg("Failed to set status to OFFLINE")
+	}
 
 	if err := redisclient.DeleteKey(cleanupCtx, clientID+redisLocationKeySuffix); err != nil {
 		log.Error().Err(err).Str("clientID", clientID).Msg("Failed to delete location key")
