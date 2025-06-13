@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/learningfun-dev/NimbusGRPC/nimbus/config"
+	"github.com/learningfun-dev/NimbusGRPC/nimbus/constants"
 	"github.com/learningfun-dev/NimbusGRPC/nimbus/redisclient"
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog/log"
@@ -17,10 +18,6 @@ import (
 
 const (
 	statusCheckInterval = 10 * time.Second // Check more frequently to flip status faster
-
-	// Key suffixes for our offset-based Redis state management.
-	redisTargetOffsetKeySuffix    = "-replay-target-offset"
-	redisLastAckedOffsetKeySuffix = "-last-acked-offset"
 )
 
 // StatusManager periodically checks for clients in REPLAYING state
@@ -86,7 +83,7 @@ func (sm *StatusManager) checkAndTransitionClients(ctx context.Context) error {
 		// has reached the target offset that was set when the replay began.
 
 		// Get the target offset (the "finish line").
-		targetOffsetStr, err := redisclient.GetKeyValue(ctx, clientID+redisTargetOffsetKeySuffix)
+		targetOffsetStr, err := redisclient.GetKeyValue(ctx, clientID+constants.RedisTargetOffsetKeySuffix)
 		if err != nil {
 			// If the target key is missing, something went wrong during connection setup.
 			// It's safer to not change the state and let it be investigated.
@@ -96,7 +93,7 @@ func (sm *StatusManager) checkAndTransitionClients(ctx context.Context) error {
 		targetOffset, _ := strconv.ParseInt(targetOffsetStr, 10, 64)
 
 		// Get the last offset the client has acknowledged. If it doesn't exist yet, treat it as 0.
-		lastAckedOffsetStr, err := redisclient.GetKeyValue(ctx, clientID+redisLastAckedOffsetKeySuffix)
+		lastAckedOffsetStr, err := redisclient.GetKeyValue(ctx, clientID+constants.RedisLastAckedOffsetKeySuffix)
 		if err != nil && !errors.Is(err, redis.Nil) {
 			log.Warn().Err(err).Str("clientID", clientID).Msg("StatusManager: Could not get last ACKed offset for replaying client. Skipping.")
 			continue
@@ -117,8 +114,8 @@ func (sm *StatusManager) checkAndTransitionClients(ctx context.Context) error {
 				log.Error().Err(err).Str("clientID", clientID).Msg("StatusManager: Failed to transition client to LIVE")
 			} else {
 				// Cleanup the state keys for this replay session.
-				_ = redisclient.DeleteKey(ctx, clientID+redisTargetOffsetKeySuffix)
-				_ = redisclient.DeleteKey(ctx, clientID+redisLastAckedOffsetKeySuffix)
+				_ = redisclient.DeleteKey(ctx, clientID+constants.RedisTargetOffsetKeySuffix)
+				_ = redisclient.DeleteKey(ctx, clientID+constants.RedisLastAckedOffsetKeySuffix)
 			}
 		}
 	}
@@ -130,7 +127,7 @@ func (sm *StatusManager) checkAndTransitionClients(ctx context.Context) error {
 func (sm *StatusManager) findReplayingClients(ctx context.Context) ([]string, error) {
 	var clients []string
 	var cursor uint64
-	pattern := "*" + redisStatusKeySuffix
+	pattern := "*" + constants.RedisStatusKeySuffix
 
 	for {
 		keys, nextCursor, err := sm.redisClient.Scan(ctx, cursor, pattern, 100).Result() // Scan in batches
@@ -140,8 +137,8 @@ func (sm *StatusManager) findReplayingClients(ctx context.Context) ([]string, er
 
 		for _, key := range keys {
 			val, err := sm.redisClient.Get(ctx, key).Result()
-			if err == nil && val == REDIS_CLIENT_STATUS_REPLAY {
-				clientID := strings.TrimSuffix(key, redisStatusKeySuffix)
+			if err == nil && val == constants.REDIS_CLIENT_STATUS_REPLAY {
+				clientID := strings.TrimSuffix(key, constants.RedisStatusKeySuffix)
 				clients = append(clients, clientID)
 			}
 		}
@@ -156,8 +153,8 @@ func (sm *StatusManager) findReplayingClients(ctx context.Context) ([]string, er
 
 // transitionClientToLive safely updates a client's status from REPLAYING to LIVE.
 func (sm *StatusManager) transitionClientToLive(ctx context.Context, clientID string) error {
-	statusKey := clientID + redisStatusKeySuffix
-	return redisclient.SetKeyValue(ctx, statusKey, REDIS_CLIENT_STATUS_LIVE)
+	statusKey := clientID + constants.RedisStatusKeySuffix
+	return redisclient.SetKeyValue(ctx, statusKey, constants.REDIS_CLIENT_STATUS_LIVE)
 }
 
 // Shutdown gracefully stops the StatusManager.

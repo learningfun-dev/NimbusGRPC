@@ -11,6 +11,7 @@ import (
 
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
 	"github.com/learningfun-dev/NimbusGRPC/nimbus/config"
+	"github.com/learningfun-dev/NimbusGRPC/nimbus/constants"
 	pb "github.com/learningfun-dev/NimbusGRPC/nimbus/proto"
 	"github.com/learningfun-dev/NimbusGRPC/nimbus/redisclient"
 	"github.com/redis/go-redis/v9"
@@ -19,12 +20,8 @@ import (
 )
 
 const (
-	REDIS_CLIENT_STATUS_REPLAY = "REPLAYING"
-	redisStatusKeySuffix       = "-status"
-	redisLocationKeySuffix     = "-location"
-	redisLastAckKeySuffix      = "-last-acked-offset"
-	ackCheckInterval           = 200 * time.Millisecond
-	maxInFlightMessages        = 500 // Max messages sent without an ACK before pausing
+	ackCheckInterval    = 200 * time.Millisecond
+	maxInFlightMessages = 500
 )
 
 // clientReplayJob now manages the state for pipelined processing.
@@ -38,8 +35,9 @@ type clientReplayJob struct {
 	mu               sync.Mutex
 	isPaused         bool
 	inFlightMessages *list.List
-	// NEW: Store the topic partition info for this job.
-	topicPartition kafka.TopicPartition
+	topicPartition   kafka.TopicPartition
+	// NEW: Store the target offset for this client's replay session.
+	targetOffset int64
 }
 
 // ReplayConsumer now dispatches work to more intelligent, pipelined workers.
@@ -122,9 +120,19 @@ func (rc *ReplayConsumer) Start(ctx context.Context) {
 	}
 }
 
-// newReplayJob creates the resources and starts the processor goroutine for a client.
+// newReplayJob now fetches the target offset when it's created.
 func (rc *ReplayConsumer) newReplayJob(ctx context.Context, clientID string) *clientReplayJob {
 	jobCtx, cancel := context.WithCancel(ctx)
+
+	// --- NEW LOGIC: Get the "finish line" offset when the job starts. ---
+	targetOffsetStr, err := redisclient.GetKeyValue(ctx, clientID+constants.RedisTargetOffsetKeySuffix)
+	if err != nil {
+		log.Error().Err(err).Str("clientID", clientID).Msg("Could not get target offset for new replay job. Replay may not complete.")
+		// We still create the job, but it will likely never finish without a target.
+		// A robust system might re-queue this client for setup.
+	}
+	targetOffset, _ := strconv.ParseInt(targetOffsetStr, 10, 64)
+
 	job := &clientReplayJob{
 		clientID:         clientID,
 		msgChannel:       make(chan *kafka.Message, maxInFlightMessages),
@@ -133,7 +141,9 @@ func (rc *ReplayConsumer) newReplayJob(ctx context.Context, clientID string) *cl
 		consumer:         rc.consumer,
 		wg:               rc.wg,
 		inFlightMessages: list.New(),
+		targetOffset:     targetOffset, // Store the finish line
 	}
+
 	rc.wg.Add(1)
 	go job.run()
 	return job
@@ -142,8 +152,8 @@ func (rc *ReplayConsumer) newReplayJob(ctx context.Context, clientID string) *cl
 // run is the dedicated worker goroutine for a single client.
 func (j *clientReplayJob) run() {
 	defer j.wg.Done()
-	defer j.resumePartition() // Ensure partition is resumed on exit
-	log.Info().Str("clientID", j.clientID).Msg("ReplayConsumer: Starting dedicated replay processor goroutine.")
+	defer j.resumePartition()
+	log.Info().Str("clientID", j.clientID).Int64("targetOffset", j.targetOffset).Msg("Starting dedicated replay processor goroutine.")
 
 	ackTicker := time.NewTicker(ackCheckInterval)
 	defer ackTicker.Stop()
@@ -151,15 +161,13 @@ func (j *clientReplayJob) run() {
 	for {
 		select {
 		case <-ackTicker.C:
-			j.checkAcks()
+			j.checkAcksAndCompleteReplay() // Modified function name
 		case msg, ok := <-j.msgChannel:
 			if !ok {
-				log.Info().Str("clientID", j.clientID).Msg("ReplayConsumer: Replay message channel closed. Shutting down processor.")
 				return
 			}
 			j.handleMessage(msg)
 		case <-j.ctx.Done():
-			log.Info().Str("clientID", j.clientID).Msg("ReplayConsumer: Replay processor context canceled. Shutting down.")
 			return
 		}
 	}
@@ -187,8 +195,9 @@ func (j *clientReplayJob) handleMessage(msg *kafka.Message) {
 	}
 }
 
-// checkAcks periodically checks Redis for acknowledgements and commits offsets.
-func (j *clientReplayJob) checkAcks() {
+// checkAcksAndCompleteReplay is the new core logic.
+// It checks ACKs, commits offsets, and determines if the replay is finished.
+func (j *clientReplayJob) checkAcksAndCompleteReplay() {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 
@@ -196,10 +205,10 @@ func (j *clientReplayJob) checkAcks() {
 		return
 	}
 
-	ackKey := j.clientID + redisLastAckKeySuffix
+	ackKey := j.clientID + constants.RedisLastAckedOffsetKeySuffix
 	lastAckedStr, err := redisclient.GetKeyValue(context.Background(), ackKey)
 	if err != nil && !errors.Is(err, redis.Nil) {
-		log.Error().Err(err).Str("clientID", j.clientID).Msg("ReplayConsumer: Failed to check ACK status in Redis.")
+		log.Error().Err(err).Str("clientID", j.clientID).Msg("Failed to check ACK status in Redis.")
 		return
 	}
 	lastAckedOffset, _ := strconv.ParseInt(lastAckedStr, 10, 64)
@@ -218,20 +227,51 @@ func (j *clientReplayJob) checkAcks() {
 	}
 
 	if lastCommittedMsg != nil {
-		log.Info().Str("clientID", j.clientID).Int64("commitOffset", int64(lastCommittedMsg.TopicPartition.Offset)).Msg("ReplayConsumer: Batch ACKed. Committing offset.")
+		log.Info().Str("clientID", j.clientID).Int64("commitOffset", int64(lastCommittedMsg.TopicPartition.Offset)).Msg("Batch ACKed. Committing offset.")
 		if _, err := j.consumer.CommitMessage(lastCommittedMsg); err != nil {
 			log.Fatal().Err(err).Str("clientID", j.clientID).Msg("ReplayConsumer: CRITICAL - Failed to commit offset after batch ACK.")
 		}
+
+		// After a successful commit, check if we have reached the finish line.
+		if int64(lastCommittedMsg.TopicPartition.Offset) >= j.targetOffset {
+			log.Info().
+				Str("clientID", j.clientID).
+				Int64("lastAckedOffset", lastAckedOffset).
+				Int64("targetOffset", j.targetOffset).
+				Msg("Replay for client is complete. Transitioning status to LIVE.")
+
+			// Transition status to LIVE and cleanup.
+			j.completeReplay()
+
+			// Cancel this worker's context to shut it down gracefully.
+			j.cancelFunc()
+		}
 	}
 
-	// CORRECTED: This logic now correctly resumes the partition.
 	if j.isPaused && j.inFlightMessages.Len() < (maxInFlightMessages/2) {
-		log.Info().Str("clientID", j.clientID).Int("inFlight", j.inFlightMessages.Len()).Msg("ReplayConsumer: In-flight window has space. Resuming partition.")
+		log.Info().Str("clientID", j.clientID).Int("inFlight", j.inFlightMessages.Len()).Msg("In-flight window has space. Resuming partition.")
 		if err := j.consumer.Resume([]kafka.TopicPartition{j.topicPartition}); err != nil {
-			log.Error().Err(err).Str("clientID", j.clientID).Msg("ReplayConsumer: Failed to resume partition")
+			log.Error().Err(err).Str("clientID", j.clientID).Msg("Failed to resume partition")
 		}
 		j.isPaused = false
 	}
+}
+
+// completeReplay updates Redis to finalize the replay process.
+func (j *clientReplayJob) completeReplay() {
+	ctx := context.Background()
+	statusKey := j.clientID + constants.RedisStatusKeySuffix
+	targetOffsetKey := j.clientID + constants.RedisTargetOffsetKeySuffix
+	lastAckedOffsetKey := j.clientID + constants.RedisLastAckedOffsetKeySuffix
+
+	if err := redisclient.SetKeyValue(ctx, statusKey, constants.REDIS_CLIENT_STATUS_LIVE); err != nil {
+		log.Error().Err(err).Str("clientID", j.clientID).Msg("Failed to transition client to LIVE")
+		return
+	}
+
+	// Cleanup the state keys for this replay session.
+	_ = redisclient.DeleteKey(ctx, targetOffsetKey)
+	_ = redisclient.DeleteKey(ctx, lastAckedOffsetKey)
 }
 
 // resumePartition is a helper to ensure the partition is resumed when the goroutine exits.
@@ -254,16 +294,16 @@ func (j *clientReplayJob) publishMessageToRedis(msg *kafka.Message) error {
 	ctx := context.Background()
 	clientID := eventResp.ClientId
 
-	status, err := redisclient.GetKeyValue(ctx, clientID+redisStatusKeySuffix)
+	status, err := redisclient.GetKeyValue(ctx, clientID+constants.RedisStatusKeySuffix)
 	if err != nil {
 		return fmt.Errorf("failed to get client status from Redis: %w", err)
 	}
-	if status != REDIS_CLIENT_STATUS_REPLAY {
+	if status != constants.REDIS_CLIENT_STATUS_REPLAY {
 		j.cancelFunc() // Cancel this job as the client is no longer replaying.
 		return fmt.Errorf("client '%s' is no longer in REPLAYING state", clientID)
 	}
 
-	podChannel, err := redisclient.GetKeyValue(ctx, clientID+redisLocationKeySuffix)
+	podChannel, err := redisclient.GetKeyValue(ctx, clientID+constants.RedisLocationKeySuffix)
 	if err != nil {
 		return fmt.Errorf("client '%s' has no location in Redis: %w", clientID, err)
 	}

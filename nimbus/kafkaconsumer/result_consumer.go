@@ -9,17 +9,13 @@ import (
 
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
 	"github.com/learningfun-dev/NimbusGRPC/nimbus/config"
+	"github.com/learningfun-dev/NimbusGRPC/nimbus/constants"
 	"github.com/learningfun-dev/NimbusGRPC/nimbus/kafkaproducer"
 	pb "github.com/learningfun-dev/NimbusGRPC/nimbus/proto"
 	"github.com/learningfun-dev/NimbusGRPC/nimbus/redisclient"
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog/log"
 	"google.golang.org/protobuf/proto"
-)
-
-const (
-	// REDIS_CLIENT_STATUS_LIVE is the status value indicating a client is fully online and not replaying.
-	REDIS_CLIENT_STATUS_LIVE = "LIVE"
 )
 
 // ResultConsumer consumes results from KafkaResultsTopic and publishes them to Redis.
@@ -131,7 +127,7 @@ func (rc *ResultConsumer) routeOrDivertResult(ctx context.Context, resp *pb.Kafk
 		return fmt.Errorf("could not get client status from Redis: %w", err)
 	}
 
-	if clientStatus != REDIS_CLIENT_STATUS_LIVE {
+	if clientStatus != constants.REDIS_CLIENT_STATUS_LIVE {
 		log.Info().
 			Str("clientID", resp.ClientId).
 			Str("status", clientStatus).
