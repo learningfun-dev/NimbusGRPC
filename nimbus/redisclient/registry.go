@@ -4,9 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/rs/zerolog/log"
 )
 
 // SetKeyValue stores a simple key-value pair in Redis.
@@ -21,11 +21,11 @@ func SetKeyValue(ctx context.Context, key string, value interface{}) error {
 
 	err := rdb.Set(ctx, key, value, 0).Err()
 	if err != nil {
-		log.Printf("[ERROR] RedisRegistry: Failed to SET key '%s'. Error: %v", key, err)
+		log.Error().Err(err).Str("key", key).Msg("RedisRegistry: Failed to SET key")
 		return fmt.Errorf("failed to set key %s: %w", key, err)
 	}
 
-	log.Printf("[DEBUG] RedisRegistry: Successfully SET key '%s'.", key)
+	log.Debug().Str("key", key).Interface("value", value).Msg("RedisRegistry: Successfully SET key")
 	return nil
 }
 
@@ -45,15 +45,15 @@ func GetKeyValue(ctx context.Context, key string) (string, error) {
 		// This is often an expected outcome (e.g., checking if a client is connected),
 		// not a system error. We return it so the calling function can check for it.
 		if errors.Is(err, redis.Nil) {
-			log.Printf("[DEBUG] RedisRegistry: Key '%s' does not exist (redis.Nil).", key)
+			log.Debug().Str("key", key).Msg("RedisRegistry: Key does not exist (redis.Nil).")
 			return "", redis.Nil // Return the specific redis.Nil error.
 		}
 		// For any other error (e.g., connection issue), log it as a proper error.
-		log.Printf("[ERROR] RedisRegistry: Failed to GET key '%s'. Error: %v", key, err)
+		log.Error().Err(err).Str("key", key).Msg("RedisRegistry: Failed to GET key")
 		return "", fmt.Errorf("failed to get key %s: %w", key, err)
 	}
 
-	log.Printf("[DEBUG] RedisRegistry: Successfully GET key '%s'.", key)
+	log.Debug().Str("key", key).Msg("RedisRegistry: Successfully GET key")
 	return value, nil
 }
 
@@ -70,10 +70,10 @@ func DeleteKey(ctx context.Context, key string) error {
 	// even if the key didn't exist (it will just return 0).
 	err := rdb.Del(ctx, key).Err()
 	if err != nil {
-		log.Printf("[ERROR] RedisRegistry: Failed to DEL key '%s'. Error: %v", key, err)
+		log.Error().Err(err).Str("key", key).Msg("RedisRegistry: Failed to DEL key")
 		return fmt.Errorf("failed to delete key %s: %w", key, err)
 	}
 
-	log.Printf("[DEBUG] RedisRegistry: Successfully executed DEL command for key '%s'.", key)
+	log.Debug().Str("key", key).Msg("RedisRegistry: Successfully executed DEL command")
 	return nil
 }

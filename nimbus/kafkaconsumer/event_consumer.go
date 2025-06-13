@@ -3,15 +3,16 @@ package kafkaconsumer
 import (
 	"context"
 	"fmt"
-	"log"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
-	"github.com/learningfun-dev/NimbusGRPC/nimbus/config"        // Your config package
-	"github.com/learningfun-dev/NimbusGRPC/nimbus/kafkaproducer" // Your Kafka producer package
-	pb "github.com/learningfun-dev/NimbusGRPC/nimbus/proto"      // Your proto package
+	"github.com/learningfun-dev/NimbusGRPC/nimbus/config"
+	"github.com/learningfun-dev/NimbusGRPC/nimbus/kafkaproducer"
+
+	pb "github.com/learningfun-dev/NimbusGRPC/nimbus/proto"
+	"github.com/rs/zerolog/log"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -37,7 +38,7 @@ func NewEventConsumer(cfg *config.Config, wg *sync.WaitGroup) (*EventConsumer, e
 		"bootstrap.servers":  cfg.KafkaBrokers,
 		"group.id":           "nimbus-events-processor-group", // Unique group ID for this consumer
 		"auto.offset.reset":  "earliest",
-		"enable.auto.commit": "false", // MODIFIED: Using manual commits for safety.
+		"enable.auto.commit": "false", // Using manual commits for safety.
 	}
 
 	c, err := kafka.NewConsumer(consumerConfig)
@@ -45,7 +46,7 @@ func NewEventConsumer(cfg *config.Config, wg *sync.WaitGroup) (*EventConsumer, e
 		return nil, fmt.Errorf("failed to create EventConsumer: %w", err)
 	}
 
-	log.Printf("[INFO] EventConsumer: Subscribing to topic: %s", cfg.KafkaEventsTopic)
+	log.Info().Str("topic", cfg.KafkaEventsTopic).Msg("EventConsumer: Subscribing to topic")
 	err = c.SubscribeTopics([]string{cfg.KafkaEventsTopic}, nil)
 	if err != nil {
 		_ = c.Close()
@@ -63,7 +64,7 @@ func NewEventConsumer(cfg *config.Config, wg *sync.WaitGroup) (*EventConsumer, e
 // Start begins the message consumption loop.
 func (ec *EventConsumer) Start(ctx context.Context) {
 	defer ec.wg.Done()
-	log.Printf("[INFO] EventConsumer: Starting to consume from topic '%s'", ec.appConfig.KafkaEventsTopic)
+	log.Info().Str("topic", ec.appConfig.KafkaEventsTopic).Msg("EventConsumer: Starting to consume")
 
 	run := true
 	for run {
@@ -78,7 +79,7 @@ func (ec *EventConsumer) Start(ctx context.Context) {
 				if kerr, ok := err.(kafka.Error); ok && kerr.Code() == kafka.ErrTimedOut {
 					continue
 				}
-				log.Printf("[ERROR] EventConsumer: Error reading message: %v", err)
+				log.Error().Err(err).Msg("EventConsumer: Error reading message")
 				if kerr, ok := err.(kafka.Error); ok && kerr.IsFatal() {
 					run = false
 				}
@@ -87,27 +88,28 @@ func (ec *EventConsumer) Start(ctx context.Context) {
 
 			var eventReq pb.KafkaEventReqest
 			if err := proto.Unmarshal(msg.Value, &eventReq); err != nil {
-				log.Printf("[ERROR] EventConsumer: Failed to unmarshal message. Committing to skip. Error: %v", err)
+				log.Error().Err(err).Msg("EventConsumer: Failed to unmarshal message. Committing to skip.")
 				if _, commitErr := ec.consumer.CommitMessage(msg); commitErr != nil {
+					log.Fatal().Err(commitErr).Msg("EventConsumer: Failed to commit poison pill message")
 					run = false
 				}
 				continue
 			}
 
-			log.Printf("[INFO] EventConsumer: Processing event for client '%s'", eventReq.ClientId)
+			log.Info().Str("clientID", eventReq.ClientId).Msg("EventConsumer: Processing event")
 			processingErr := ec.processAndProduceResult(&eventReq)
 
 			if processingErr == nil {
 				if _, commitErr := ec.consumer.CommitMessage(msg); commitErr != nil {
-					log.Printf("[FATAL] EventConsumer: Failed to commit offset after successful processing: %v", commitErr)
+					log.Fatal().Err(commitErr).Msg("EventConsumer: Failed to commit offset after successful processing")
 					run = false
 				}
 			} else {
-				log.Printf("[ERROR] EventConsumer: Failed to process event for client '%s'. Will retry later. Error: %v", eventReq.ClientId, processingErr)
+				log.Error().Err(processingErr).Str("clientID", eventReq.ClientId).Msg("EventConsumer: Failed to process event. Will retry later.")
 			}
 		}
 	}
-	log.Printf("[INFO] EventConsumer: Message consumption loop stopped for topic '%s'.", ec.appConfig.KafkaEventsTopic)
+	log.Info().Str("topic", ec.appConfig.KafkaEventsTopic).Msg("EventConsumer: Message consumption loop stopped")
 }
 
 func (ec *EventConsumer) processAndProduceResult(req *pb.KafkaEventReqest) error {
@@ -117,7 +119,7 @@ func (ec *EventConsumer) processAndProduceResult(req *pb.KafkaEventReqest) error
 	case "sq":
 		resultValue = req.Number * req.Number
 	default:
-		log.Printf("[WARN] EventConsumer: Received unknown event name '%s' for clientID '%s'. Skipping.", req.EventName, req.ClientId)
+		log.Warn().Str("eventName", req.EventName).Str("clientID", req.ClientId).Msg("EventConsumer: Received unknown event name. Skipping.")
 		return nil // Consider it success, we don't want to retry unknown events.
 	}
 
@@ -129,28 +131,37 @@ func (ec *EventConsumer) processAndProduceResult(req *pb.KafkaEventReqest) error
 		RedisChannel: req.RedisChannel, // Pass through the original Redis channel
 	}
 
-	// Produce the result to KafkaResultsTopic. This function already retries internally.
+	// Produce the result to KafkaResultsTopic.
 	err := kafkaproducer.PublishEventResponse(ec.appConfig.KafkaResultsTopic, resultEvent)
 	if err != nil {
-		log.Printf("[ERROR] EventConsumer: Failed to produce result to Kafka topic '%s' for client '%s'. Error: %v",
-			ec.appConfig.KafkaResultsTopic, req.ClientId, err)
+		log.Error().
+			Err(err).
+			Str("topic", ec.appConfig.KafkaResultsTopic).
+			Str("clientID", req.ClientId).
+			Msg("EventConsumer: Failed to produce result to Kafka")
 		return err // Return error so we don't commit the original message.
 	}
 
-	log.Printf("[INFO] EventConsumer: Successfully produced result to Kafka topic '%s' for clientID '%s'.",
-		ec.appConfig.KafkaResultsTopic, req.ClientId)
+	log.Info().
+		Str("topic", ec.appConfig.KafkaResultsTopic).
+		Str("clientID", req.ClientId).
+		Msg("EventConsumer: Successfully produced result to Kafka")
 	return nil // Success!
 }
 
 // Shutdown gracefully stops the consumer.
 func (ec *EventConsumer) Shutdown() {
-	log.Printf("[INFO] EventConsumer: Initiating shutdown for consumer of topic '%s'...", ec.appConfig.KafkaEventsTopic)
-	close(ec.shutdownCh)
+	topic := "unknown"
+	if ec.appConfig != nil {
+		topic = ec.appConfig.KafkaEventsTopic
+	}
+	log.Info().Str("topic", topic).Msg("EventConsumer: Initiating shutdown...")
+	close(ec.shutdownCh) // Signal the consumption loop to stop
 	if ec.consumer != nil {
-		log.Printf("[INFO] EventConsumer: Closing Kafka consumer instance for topic '%s'.", ec.appConfig.KafkaEventsTopic)
+		log.Info().Str("topic", topic).Msg("EventConsumer: Closing Kafka consumer instance")
 		if err := ec.consumer.Close(); err != nil {
-			log.Printf("[ERROR] EventConsumer: Error closing Kafka consumer for topic '%s': %v", ec.appConfig.KafkaEventsTopic, err)
+			log.Error().Err(err).Str("topic", topic).Msg("EventConsumer: Error closing Kafka consumer")
 		}
 	}
-	log.Printf("[INFO] EventConsumer: Shutdown complete for topic '%s'.", ec.appConfig.KafkaEventsTopic)
+	log.Info().Str("topic", topic).Msg("EventConsumer: Shutdown complete.")
 }

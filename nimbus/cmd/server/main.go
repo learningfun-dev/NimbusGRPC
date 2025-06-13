@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
 	"net"
 	"os"
 	"os/signal"
@@ -14,13 +13,17 @@ import (
 	"github.com/learningfun-dev/NimbusGRPC/nimbus/config"
 	"github.com/learningfun-dev/NimbusGRPC/nimbus/kafkaadmin"
 	"github.com/learningfun-dev/NimbusGRPC/nimbus/kafkaproducer"
+	"github.com/learningfun-dev/NimbusGRPC/nimbus/logger"
 	pb "github.com/learningfun-dev/NimbusGRPC/nimbus/proto"
 	"github.com/learningfun-dev/NimbusGRPC/nimbus/redisclient"
+	"github.com/rs/zerolog/log"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/health"
 	"google.golang.org/grpc/health/grpc_health_v1"
 )
 
+// Server struct and its methods are likely defined across main.go and events.go
+// within the same 'main' package.
 type Server struct {
 	pb.NimbusServiceServer
 	clientStreamManager *ClientStreamManager
@@ -29,64 +32,64 @@ type Server struct {
 }
 
 func main() {
-	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
-	log.Println("[INFO] NimbusGRPC server starting...")
+	logger.Init()
+
+	log.Info().Msg("NimbusGRPC server starting...")
 
 	cfg, err := config.Load()
 	if err != nil {
-		log.Fatalf("[FATAL] Failed to load configuration: %v", err)
+		log.Fatal().Err(err).Msg("Failed to load configuration")
 	}
 
 	// Initialize Kafka Producer
 	if err := kafkaproducer.InitProducer(cfg); err != nil {
-		log.Fatalf("[FATAL] Failed to initialize Kafka producer: %v", err)
+		log.Fatal().Err(err).Msg("Failed to initialize Kafka producer")
 	}
 	defer func() {
-		log.Println("[INFO] Closing Kafka producer...")
+		log.Info().Msg("Closing Kafka producer...")
 		kafkaproducer.CloseProducer(cfg.ShutdownTimeout)
-		log.Println("[INFO] Kafka producer closed.")
+		log.Info().Msg("Kafka producer closed.")
 	}()
 
 	// Initialize Redis Client
 	if err := redisclient.InitClient(cfg); err != nil {
-		log.Fatalf("[FATAL] Failed to initialize Redis client: %v", err)
+		log.Fatal().Err(err).Msg("Failed to initialize Redis client")
 	}
 	defer func() {
-		log.Println("[INFO] Closing Redis client...")
+		log.Info().Msg("Closing Redis client...")
 		if err := redisclient.CloseClient(); err != nil {
-			log.Printf("[ERROR] Error closing Redis client: %v", err)
+			log.Error().Err(err).Msg("Error closing Redis client")
 		} else {
-			log.Println("[INFO] Redis client closed.")
+			log.Info().Msg("Redis client closed.")
 		}
 	}()
 
 	// Initialize Kafka Admin Client
 	if err := kafkaadmin.InitAdminClient(cfg); err != nil {
-		log.Fatalf("[FATAL] Failed to initialize Kafka admin client: %v", err)
+		log.Fatal().Err(err).Msg("Failed to initialize Kafka admin client")
 	}
 	defer func() {
-		log.Println("[INFO] Closing Kafka admin client...")
+		log.Info().Msg("Closing Kafka admin client...")
 		kafkaadmin.CloseAdminClient()
-		log.Println("[INFO] Kafka admin client closed.")
+		log.Info().Msg("Kafka admin client closed.")
 	}()
 
-	// Create kafka topics
+	// Create Kafka topics if they don't exist.
 	topics := []string{
 		cfg.KafkaEventsTopic,
 		cfg.KafkaResultsTopic,
 		cfg.KafkaDLQTopic,
 	}
-
 	if err := kafkaadmin.CreateTopics(topics); err != nil {
-		log.Fatalf("[FATAL] Failed to create Kafka Topics: %v", err)
+		log.Fatal().Err(err).Msg("Failed to create Kafka Topics")
 	}
 
 	addr := fmt.Sprintf("0.0.0.0:%d", cfg.Port)
 	lis, err := net.Listen("tcp", addr)
 	if err != nil {
-		log.Fatalf("[FATAL] Failed to listen on %s: %v", addr, err)
+		log.Fatal().Err(err).Str("address", addr).Msg("Failed to listen on address")
 	}
-	log.Printf("[INFO] gRPC server listening on %s", addr)
+	log.Info().Str("address", addr).Msg("gRPC server listening")
 
 	grpcServer := grpc.NewServer()
 
@@ -106,44 +109,49 @@ func main() {
 	}
 	pb.RegisterNimbusServiceServer(grpcServer, nimbusServer)
 
+	// Register health check service
 	healthService := health.NewServer()
 	grpc_health_v1.RegisterHealthServer(grpcServer, healthService)
 	healthService.SetServingStatus("nimbus.NimbusService", grpc_health_v1.HealthCheckResponse_SERVING)
-	healthService.SetServingStatus("", grpc_health_v1.HealthCheckResponse_SERVING)
+	healthService.SetServingStatus("", grpc_health_v1.HealthCheckResponse_SERVING) // Overall server health
 
 	var wg sync.WaitGroup
 
+	// Start gRPC server
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		log.Println("[INFO] Starting gRPC server...")
+		log.Info().Msg("Starting gRPC server...")
 		if errSrv := grpcServer.Serve(lis); errSrv != nil {
-			log.Printf("[ERROR] gRPC server failed to serve: %v", errSrv)
+			log.Error().Err(errSrv).Msg("gRPC server failed to serve")
 		}
-		log.Println("[INFO] gRPC server stopped.")
+		log.Info().Msg("gRPC server stopped.")
 	}()
 
+	// Start Redis subscriber
 	subscriberCtx, subscriberCancel := context.WithCancel(context.Background())
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		log.Println("[INFO] Starting Redis subscriber...")
+		log.Info().Msg("Starting Redis subscriber...")
 		// Start method is now on nimbusServer.redisSub which is *redisclient.RedisSubscriber
 		nimbusServer.redisSub.Start(subscriberCtx)
-		log.Println("[INFO] Redis subscriber stopped.")
+		log.Info().Msg("Redis subscriber stopped.")
 	}()
 
+	// Wait for shutdown signal
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
 	receivedSignal := <-sigChan
-	log.Printf("[INFO] Received shutdown signal: %v. Initiating graceful shutdown...", receivedSignal)
+	log.Info().Str("signal", receivedSignal.String()).Msg("Shutdown signal received, initiating graceful shutdown")
 
 	healthService.SetServingStatus("nimbus.NimbusService", grpc_health_v1.HealthCheckResponse_NOT_SERVING)
 	healthService.SetServingStatus("", grpc_health_v1.HealthCheckResponse_NOT_SERVING)
 
 	subscriberCancel()
 
+	// Handle graceful shutdown
 	stopped := make(chan struct{})
 	go func() {
 		grpcServer.GracefulStop()
@@ -152,13 +160,13 @@ func main() {
 
 	select {
 	case <-stopped:
-		log.Println("[INFO] gRPC server gracefully stopped.")
+		log.Info().Msg("gRPC server gracefully stopped.")
 	case <-time.After(cfg.ShutdownTimeout):
-		log.Println("[WARN] gRPC server shutdown timed out. Forcing stop...")
+		log.Warn().Msg("gRPC server shutdown timed out. Forcing stop...")
 		grpcServer.Stop()
 	}
 
-	log.Println("[INFO] Waiting for background goroutines to finish...")
+	log.Info().Msg("Waiting for background goroutines to finish...")
 	wg.Wait()
-	log.Println("[INFO] NimbusGRPC server shut down gracefully.")
+	log.Info().Msg("NimbusGRPC server shut down gracefully.")
 }

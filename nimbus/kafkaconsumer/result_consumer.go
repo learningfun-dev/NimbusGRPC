@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"sync"
 	"time"
 
@@ -14,6 +13,7 @@ import (
 	pb "github.com/learningfun-dev/NimbusGRPC/nimbus/proto"
 	"github.com/learningfun-dev/NimbusGRPC/nimbus/redisclient"
 	"github.com/redis/go-redis/v9"
+	"github.com/rs/zerolog/log"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -51,7 +51,7 @@ func NewResultConsumer(cfg *config.Config, wg *sync.WaitGroup) (*ResultConsumer,
 		return nil, fmt.Errorf("failed to create ResultConsumer: %w", err)
 	}
 
-	log.Printf("[INFO] ResultConsumer: Subscribing to topic: %s", cfg.KafkaResultsTopic)
+	log.Info().Str("topic", cfg.KafkaResultsTopic).Msg("ResultConsumer: Subscribing to topic")
 	err = c.SubscribeTopics([]string{cfg.KafkaResultsTopic}, nil)
 	if err != nil {
 		_ = c.Close()
@@ -69,16 +69,14 @@ func NewResultConsumer(cfg *config.Config, wg *sync.WaitGroup) (*ResultConsumer,
 // Start begins the message consumption loop.
 func (rc *ResultConsumer) Start(ctx context.Context) {
 	defer rc.wg.Done()
-	log.Printf("[INFO] ResultConsumer: Starting to consume from topic '%s'", rc.appConfig.KafkaResultsTopic)
+	log.Info().Str("topic", rc.appConfig.KafkaResultsTopic).Msg("ResultConsumer: Starting to consume")
 
 	run := true
 	for run {
 		select {
 		case <-ctx.Done():
-			log.Printf("[INFO] ResultConsumer: Context cancellation received. Shutting down consumer for topic '%s'.", rc.appConfig.KafkaResultsTopic)
 			run = false
 		case <-rc.shutdownCh:
-			log.Printf("[INFO] ResultConsumer: Shutdown signal received. Stopping consumer for topic '%s'.", rc.appConfig.KafkaResultsTopic)
 			run = false
 		default:
 			msg, err := rc.consumer.ReadMessage(1 * time.Second) // Poll with timeout
@@ -86,53 +84,44 @@ func (rc *ResultConsumer) Start(ctx context.Context) {
 				if kerr, ok := err.(kafka.Error); ok && kerr.Code() == kafka.ErrTimedOut {
 					continue // This is an expected timeout when no new messages are available.
 				}
-				log.Printf("[ERROR] ResultConsumer: Error reading message from topic '%s': %v", rc.appConfig.KafkaResultsTopic, err)
+				log.Error().Err(err).Str("topic", rc.appConfig.KafkaResultsTopic).Msg("ResultConsumer: Error reading message")
 				if kerr, ok := err.(kafka.Error); ok && kerr.IsFatal() {
-					log.Printf("[FATAL] ResultConsumer: Fatal error encountered on topic '%s', shutting down.", rc.appConfig.KafkaResultsTopic)
+					log.Fatal().Err(err).Str("topic", rc.appConfig.KafkaResultsTopic).Msg("ResultConsumer: Fatal error encountered, shutting down.")
 					run = false
 				}
 				continue
 			}
 
-			// A message was received, now process it.
 			var eventResp pb.KafkaEventResponse
 			if err := proto.Unmarshal(msg.Value, &eventResp); err != nil {
-				log.Printf("[ERROR] ResultConsumer: Failed to unmarshal protobuf message from topic '%s'. Error: %v. Message will be sent to a poison pill queue.", *msg.TopicPartition.Topic, err)
-				// Best practice: For malformed messages, we commit the offset so we don't process it again.
-				// Optionally, send the raw message to a separate "poison pill" queue for inspection.
+				log.Error().Err(err).Str("topic", *msg.TopicPartition.Topic).Msg("ResultConsumer: Failed to unmarshal message. Committing to skip.")
 				if _, commitErr := rc.consumer.CommitMessage(msg); commitErr != nil {
-					log.Printf("[FATAL] ResultConsumer: Failed to commit poison pill message offset: %v", commitErr)
-					run = false // A failure to commit is a critical error.
+					log.Fatal().Err(commitErr).Msg("ResultConsumer: Failed to commit poison pill message offset")
+					run = false
 				}
 				continue
 			}
 
-			log.Printf("[INFO] ResultConsumer: Processing result for client '%s' from topic '%s'", eventResp.ClientId, *msg.TopicPartition.Topic)
-
-			// The processing function now returns an error.
+			log.Info().Str("clientID", eventResp.ClientId).Str("topic", *msg.TopicPartition.Topic).Msg("ResultConsumer: Processing result")
 			processingErr := rc.routeOrDivertResult(ctx, &eventResp)
 
-			// Logic to manually commit offset.
 			if processingErr == nil {
-				// Success! Commit the offset so we don't re-process this message.
 				if _, commitErr := rc.consumer.CommitMessage(msg); commitErr != nil {
-					log.Printf("[FATAL] ResultConsumer: Failed to commit offset after successful processing: %v", commitErr)
-					run = false // A failure to commit is a critical error.
+					log.Fatal().Err(commitErr).Msg("ResultConsumer: Failed to commit offset after successful processing")
+					run = false
 				}
 			} else {
-				// An error occurred during processing. We DO NOT commit the offset.
-				// The message will be re-delivered by Kafka after the consumer session timeout.
-				log.Printf("[ERROR] ResultConsumer: Failed to process message for client '%s'. Will retry later. Error: %v", eventResp.ClientId, processingErr)
+				log.Error().Err(processingErr).Str("clientID", eventResp.ClientId).Msg("ResultConsumer: Failed to process message. Will retry later.")
 			}
 		}
 	}
-	log.Printf("[INFO] ResultConsumer: Message consumption loop stopped for topic '%s'.", rc.appConfig.KafkaResultsTopic)
+	log.Info().Str("topic", rc.appConfig.KafkaResultsTopic).Msg("ResultConsumer: Message consumption loop stopped")
 }
 
 // routeOrDivertResult implements the core routing logic, now with location validation.
 func (rc *ResultConsumer) routeOrDivertResult(ctx context.Context, resp *pb.KafkaEventResponse) error {
 	if resp.ClientId == "" {
-		log.Printf("[WARN] ResultConsumer: Received a result with an empty ClientId. Discarding message: %+v", resp)
+		log.Warn().Msg("ResultConsumer: Received a result with an empty ClientId. Discarding message.")
 		return nil // Discarding is considered a successful operation for this message.
 	}
 
@@ -142,66 +131,89 @@ func (rc *ResultConsumer) routeOrDivertResult(ctx context.Context, resp *pb.Kafk
 		return fmt.Errorf("could not get client status from Redis: %w", err)
 	}
 
-	// Case 1: Client status is NOT "LIVE". This means the client is offline (key is missing)
-	// OR the client is explicitly in a non-live state (like REPLAYING). Divert to DLQ.
 	if clientStatus != REDIS_CLIENT_STATUS_LIVE {
-		log.Printf("[INFO] ResultConsumer: Client '%s' status is '%s' (not LIVE). Diverting result to DLQ.", resp.ClientId, clientStatus)
+		log.Info().
+			Str("clientID", resp.ClientId).
+			Str("status", clientStatus).
+			Msg("Client status is not LIVE. Diverting result to DLQ.")
 		return rc.publishToDLQ(ctx, resp)
 	}
 
-	// Case 2: Status is LIVE. We must now verify the location.
 	locationKey := resp.ClientId + "-location"
 	currentLocation, err := redisclient.GetKeyValue(ctx, locationKey)
 	if err != nil {
-		// If status is LIVE but there's no location, something is inconsistent. Divert to DLQ to be safe.
-		log.Printf("[WARN] ResultConsumer: Inconsistency for client '%s'. Status is LIVE but no location key found. Diverting to DLQ. Error: %v", resp.ClientId, err)
+		log.Warn().
+			Err(err).
+			Str("clientID", resp.ClientId).
+			Msg("Inconsistency: Status is LIVE but no location key found. Diverting to DLQ.")
 		return rc.publishToDLQ(ctx, resp)
 	}
 
-	// Compare the message's routing info with the source of truth in Redis.
 	if currentLocation != resp.RedisChannel {
-		// The message is stale. The client has moved. Divert to DLQ.
-		log.Printf("[INFO] ResultConsumer: Stale message for client '%s'. Current location is '%s', but message is for old channel '%s'. Diverting to DLQ.", resp.ClientId, currentLocation, resp.RedisChannel)
+		log.Info().
+			Str("clientID", resp.ClientId).
+			Str("currentLocation", currentLocation).
+			Str("staleChannel", resp.RedisChannel).
+			Msg("Stale message detected. Diverting to DLQ.")
 		return rc.publishToDLQ(ctx, resp)
 	}
 
-	// Case 3: Status is LIVE and location matches. It's safe to publish to Redis.
-	log.Printf("[INFO] ResultConsumer: Client '%s' is LIVE at location '%s'. Publishing result.", resp.ClientId, currentLocation)
+	log.Info().
+		Str("clientID", resp.ClientId).
+		Str("location", currentLocation).
+		Msg("Client is LIVE at correct location. Publishing result to Redis.")
 	return rc.publishToRedis(ctx, resp)
 }
 
 func (rc *ResultConsumer) publishToDLQ(ctx context.Context, resp *pb.KafkaEventResponse) error {
 	err := kafkaproducer.PublishEventResponse(rc.appConfig.KafkaDLQTopic, resp)
 	if err != nil {
-		log.Printf("[CRITICAL] ResultConsumer: FAILED TO PUBLISH TO DLQ for client '%s'. Will be retried. Error: %v", resp.ClientId, err)
-		return err // Return error to prevent offset commit.
+		log.Error().
+			Err(err).
+			Str("clientID", resp.ClientId).
+			Str("topic", rc.appConfig.KafkaDLQTopic).
+			Msg("CRITICAL: FAILED TO PUBLISH TO DLQ. Will be retried.")
+		return err
 	}
-	log.Printf("[DEBUG] ResultConsumer: Successfully published result for client '%s' to DLQ topic '%s'.", resp.ClientId, rc.appConfig.KafkaDLQTopic)
-	return nil // Success.
+	log.Debug().
+		Str("clientID", resp.ClientId).
+		Str("topic", rc.appConfig.KafkaDLQTopic).
+		Msg("Successfully published result to DLQ topic.")
+	return nil
 }
 
 func (rc *ResultConsumer) publishToRedis(ctx context.Context, resp *pb.KafkaEventResponse) error {
 	if resp.RedisChannel == "" {
-		log.Printf("[WARN] ResultConsumer: Cannot publish to Redis for client '%s' because RedisChannel is empty. Diverting to DLQ.", resp.ClientId)
-		return rc.publishToDLQ(ctx, resp) // Divert to DLQ and return its status.
+		log.Warn().
+			Str("clientID", resp.ClientId).
+			Msg("Cannot publish to Redis because RedisChannel is empty. Diverting to DLQ.")
+		return rc.publishToDLQ(ctx, resp)
 	}
 	err := redisclient.Publish(ctx, resp)
 	if err != nil {
-		log.Printf("[ERROR] ResultConsumer: Failed to publish result to Redis channel '%s' for client '%s'. Will be retried. Error: %v", resp.RedisChannel, resp.ClientId, err)
-		return err // Return error to prevent offset commit.
+		log.Error().
+			Err(err).
+			Str("clientID", resp.ClientId).
+			Str("channel", resp.RedisChannel).
+			Msg("Failed to publish result to Redis channel. Will be retried.")
+		return err
 	}
-	return nil // Success.
+	return nil
 }
 
 // Shutdown gracefully stops the consumer.
 func (rc *ResultConsumer) Shutdown() {
-	log.Printf("[INFO] ResultConsumer: Initiating shutdown for consumer of topic '%s'...", rc.appConfig.KafkaResultsTopic)
+	topic := "unknown"
+	if rc.appConfig != nil {
+		topic = rc.appConfig.KafkaResultsTopic
+	}
+	log.Info().Str("topic", topic).Msg("ResultConsumer: Initiating shutdown...")
 	close(rc.shutdownCh)
 	if rc.consumer != nil {
-		log.Printf("[INFO] ResultConsumer: Closing Kafka consumer instance for topic '%s'.", rc.appConfig.KafkaResultsTopic)
+		log.Info().Str("topic", topic).Msg("ResultConsumer: Closing Kafka consumer instance")
 		if err := rc.consumer.Close(); err != nil {
-			log.Printf("[ERROR] ResultConsumer: Error closing Kafka consumer for topic '%s': %v", rc.appConfig.KafkaResultsTopic, err)
+			log.Error().Err(err).Str("topic", topic).Msg("ResultConsumer: Error closing Kafka consumer")
 		}
 	}
-	log.Printf("[INFO] ResultConsumer: Shutdown complete for topic '%s'.", rc.appConfig.KafkaResultsTopic)
+	log.Info().Str("topic", topic).Msg("ResultConsumer: Shutdown complete.")
 }

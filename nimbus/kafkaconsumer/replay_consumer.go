@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"strconv"
 	"sync"
 	"time"
@@ -14,6 +13,7 @@ import (
 	pb "github.com/learningfun-dev/NimbusGRPC/nimbus/proto"
 	"github.com/learningfun-dev/NimbusGRPC/nimbus/redisclient"
 	"github.com/redis/go-redis/v9"
+	"github.com/rs/zerolog/log"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -37,7 +37,7 @@ type ReplayConsumer struct {
 	appConfig         *config.Config
 	wg                *sync.WaitGroup
 	shutdownCh        chan struct{}
-	processingClients sync.Map // MODIFIED: Tracks clients currently being processed to prevent head-of-line blocking.
+	processingClients sync.Map
 }
 
 // NewReplayConsumer creates a new ReplayConsumer.
@@ -58,7 +58,7 @@ func NewReplayConsumer(cfg *config.Config, wg *sync.WaitGroup) (*ReplayConsumer,
 		return nil, fmt.Errorf("failed to create ReplayConsumer: %w", err)
 	}
 
-	log.Printf("[INFO] ReplayConsumer: Subscribing to topic: %s", cfg.KafkaDLQTopic)
+	log.Info().Str("topic", cfg.KafkaDLQTopic).Msg("ReplayConsumer: Subscribing to topic")
 	err = c.SubscribeTopics([]string{cfg.KafkaDLQTopic}, nil)
 	if err != nil {
 		_ = c.Close()
@@ -76,7 +76,7 @@ func NewReplayConsumer(cfg *config.Config, wg *sync.WaitGroup) (*ReplayConsumer,
 // Start begins the message consumption loop. It acts as a dispatcher.
 func (rc *ReplayConsumer) Start(ctx context.Context) {
 	defer rc.wg.Done()
-	log.Printf("[INFO] ReplayConsumer: Starting to consume from DLQ topic '%s'", rc.appConfig.KafkaDLQTopic)
+	log.Info().Str("topic", rc.appConfig.KafkaDLQTopic).Msg("ReplayConsumer: Starting to consume")
 
 	run := true
 	for run {
@@ -91,71 +91,60 @@ func (rc *ReplayConsumer) Start(ctx context.Context) {
 				if kerr, ok := err.(kafka.Error); ok && kerr.Code() == kafka.ErrTimedOut {
 					continue
 				}
-				log.Printf("[ERROR] ReplayConsumer: Error reading message: %v", err)
+				log.Error().Err(err).Msg("ReplayConsumer: Error reading message")
 				if kerr, ok := err.(kafka.Error); ok && kerr.IsFatal() {
 					run = false
 				}
 				continue
 			}
 
-			// MODIFIED: Asynchronous, non-blocking dispatch logic.
 			clientID := string(msg.Key)
 			if clientID == "" {
-				log.Printf("[WARN] ReplayConsumer: Message in DLQ has no Key (ClientId). Skipping and committing.")
+				log.Warn().Msg("ReplayConsumer: Message in DLQ has no Key (ClientId). Skipping and committing.")
 				if _, commitErr := rc.consumer.CommitMessage(msg); commitErr != nil {
-					log.Printf("[FATAL] ReplayConsumer: CRITICAL - Failed to commit skipped message. Error: %v", commitErr)
+					log.Fatal().Err(commitErr).Msg("ReplayConsumer: CRITICAL - Failed to commit skipped message")
 					run = false
 				}
 				continue
 			}
 
-			// Check if a goroutine is already processing this client.
 			if _, loaded := rc.processingClients.LoadOrStore(clientID, true); loaded {
-				// If loaded is true, another goroutine is already working on this client.
-				// We DO NOT process this message now and DO NOT commit its offset.
-				// This prevents a single stuck client from blocking the partition.
-				// The main loop will continue to read messages for other clients.
-				log.Printf("[DEBUG] ReplayConsumer: Replay for client '%s' is already in progress. Skipping message for now.", clientID)
+				log.Debug().Str("clientID", clientID).Msg("Replay for client is already in progress. Skipping message for now.")
 				continue
 			}
 
+			// We are not using a goroutine here to avoid the offset commit race condition.
+			// This means we have head-of-line blocking per partition, which is a trade-off for correctness for now.
 			rc.processMessage(ctx, msg)
 		}
 	}
-	log.Printf("[INFO] ReplayConsumer: Message consumption loop stopped for topic '%s'.", rc.appConfig.KafkaDLQTopic)
+	log.Info().Str("topic", rc.appConfig.KafkaDLQTopic).Msg("ReplayConsumer: Message consumption loop stopped")
 }
 
 func (rc *ReplayConsumer) processMessage(ctx context.Context, msg *kafka.Message) {
 	clientID := string(msg.Key)
-
-	// IMPORTANT: Ensure we unlock this client for future messages, no matter what happens.
 	defer rc.processingClients.Delete(clientID)
 
 	processingErr := rc.replaySingleMessageAndWaitForAck(ctx, msg)
 
 	if processingErr == nil {
-		// Success! The message was delivered and acknowledged. Commit the offset.
 		if _, commitErr := rc.consumer.CommitMessage(msg); commitErr != nil {
-			log.Printf("[FATAL] ReplayConsumer: CRITICAL - Failed to commit offset after ACK for client '%s'. Error: %v", clientID, commitErr)
-			// This is a critical state. A monitoring system should alert on this.
+			log.Fatal().Err(commitErr).Str("clientID", clientID).Msg("ReplayConsumer: CRITICAL - Failed to commit offset after ACK")
 		}
 	} else {
-		// An error occurred (e.g., ACK timeout). We do not commit the offset.
-		// The defer statement will unlock the client, allowing this same message to be picked up and retried later.
-		log.Printf("[WARN] ReplayConsumer: Failed to process replayed message for client '%s'. Will be retried. Error: %v", clientID, processingErr)
+		log.Warn().Err(processingErr).Str("clientID", clientID).Msg("ReplayConsumer: Failed to process replayed message. Will be retried.")
 	}
 }
 
 func (rc *ReplayConsumer) replaySingleMessageAndWaitForAck(ctx context.Context, msg *kafka.Message) error {
 	var eventResp pb.KafkaEventResponse
 	if err := proto.Unmarshal(msg.Value, &eventResp); err != nil {
-		log.Printf("[ERROR] ReplayConsumer: Unmarshal error on DLQ message. Committing offset to skip. Error: %v", err)
+		log.Error().Err(err).Msg("ReplayConsumer: Unmarshal error on DLQ message. Committing offset to skip.")
 		return nil
 	}
 
 	clientID := eventResp.ClientId
 
-	// 1. Check if the client is actually ready to receive replayed messages.
 	status, err := redisclient.GetKeyValue(ctx, clientID+redisStatusKeySuffix)
 	if err != nil && !errors.Is(err, redis.Nil) {
 		return fmt.Errorf("failed to get client status from Redis: %w", err)
@@ -165,26 +154,24 @@ func (rc *ReplayConsumer) replaySingleMessageAndWaitForAck(ctx context.Context, 
 		return fmt.Errorf("client '%s' is not in REPLAYING state (current status: '%s')", clientID, status)
 	}
 
-	// 2. Get the client's current location.
 	podChannel, err := redisclient.GetKeyValue(ctx, clientID+redisLocationKeySuffix)
 	if err != nil {
 		return fmt.Errorf("client '%s' is in REPLAYING state but has no location in Redis: %w", clientID, err)
 	}
 	eventResp.RedisChannel = podChannel
-
-	// MODIFIED: Populate the Kafka offset from the consumed message.
-	// This is the critical piece of information the server pod needs to send the ACK.
 	eventResp.KafkaOffset = int64(msg.TopicPartition.Offset)
 
-	// 3. Publish the message (now including the offset) to the pod's specific Redis channel.
 	err = redisclient.Publish(ctx, &eventResp)
 	if err != nil {
 		return fmt.Errorf("failed to publish replayed message to Redis for client '%s': %w", clientID, err)
 	}
-	log.Printf("[DEBUG] ReplayConsumer: Published message for client '%s' to pod channel '%s'. Now waiting for ACK for offset %d.", clientID, podChannel, eventResp.KafkaOffset)
+	log.Debug().
+		Str("clientID", clientID).
+		Str("podChannel", podChannel).
+		Int64("offset", eventResp.KafkaOffset).
+		Msg("ReplayConsumer: Published message to pod channel. Now waiting for ACK.")
 
-	// 4. Wait for the gRPC pod to acknowledge delivery by updating a key in Redis.
-	ackKey := clientID + redisLastAckedOffsetKeySuffix
+	ackKey := clientID + redisLastAckKeySuffix
 	expectedOffset := eventResp.KafkaOffset
 
 	ctxWithTimeout, cancel := context.WithTimeout(ctx, ackTimeout)
@@ -202,10 +189,12 @@ func (rc *ReplayConsumer) replaySingleMessageAndWaitForAck(ctx context.Context, 
 
 			lastAcked, _ := strconv.ParseInt(lastAckedStr, 10, 64)
 			if lastAcked >= expectedOffset {
-				log.Printf("[INFO] ReplayConsumer: ACK received for client '%s', offset '%d'.", clientID, expectedOffset)
-				return nil // SUCCESS! The message was delivered and acknowledged.
+				log.Info().
+					Str("clientID", clientID).
+					Int64("offset", expectedOffset).
+					Msg("ReplayConsumer: ACK received.")
+				return nil // SUCCESS!
 			}
-			// ACK not yet received, wait a moment before polling again.
 			time.Sleep(100 * time.Millisecond)
 		}
 	}
@@ -213,13 +202,17 @@ func (rc *ReplayConsumer) replaySingleMessageAndWaitForAck(ctx context.Context, 
 
 // Shutdown gracefully stops the consumer.
 func (rc *ReplayConsumer) Shutdown() {
-	log.Printf("[INFO] ReplayConsumer: Initiating shutdown for consumer of topic '%s'...", rc.appConfig.KafkaDLQTopic)
+	topic := "unknown"
+	if rc.appConfig != nil {
+		topic = rc.appConfig.KafkaDLQTopic
+	}
+	log.Info().Str("topic", topic).Msg("ReplayConsumer: Initiating shutdown...")
 	close(rc.shutdownCh)
 	if rc.consumer != nil {
-		log.Printf("[INFO] ReplayConsumer: Closing Kafka consumer instance for topic '%s'.", rc.appConfig.KafkaDLQTopic)
+		log.Info().Str("topic", topic).Msg("ReplayConsumer: Closing Kafka consumer instance")
 		if err := rc.consumer.Close(); err != nil {
-			log.Printf("[ERROR] ReplayConsumer: Error closing Kafka consumer for topic '%s': %v", rc.appConfig.KafkaDLQTopic, err)
+			log.Error().Err(err).Str("topic", topic).Msg("ReplayConsumer: Error closing Kafka consumer")
 		}
 	}
-	log.Printf("[INFO] ReplayConsumer: Shutdown complete for topic '%s'.", rc.appConfig.KafkaDLQTopic)
+	log.Info().Str("topic", topic).Msg("ReplayConsumer: Shutdown complete.")
 }

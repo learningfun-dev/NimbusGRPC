@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"strings"
 	"sync"
 
@@ -13,23 +12,19 @@ import (
 	pb "github.com/learningfun-dev/NimbusGRPC/nimbus/proto"
 	"github.com/learningfun-dev/NimbusGRPC/nimbus/redisclient"
 	"github.com/redis/go-redis/v9"
-
+	"github.com/rs/zerolog/log"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
 
 const (
-	// Redis Key Suffixes for State Management
 	redisStatusKeySuffix          = "-status"
 	redisLocationKeySuffix        = "-location"
 	redisTargetOffsetKeySuffix    = "-replay-target-offset"
 	redisLastAckedOffsetKeySuffix = "-last-acked-offset"
-
-	// Redis Status Values
-	REDIS_CLIENT_STATUS_LIVE    = "LIVE"
-	REDIS_CLIENT_STATUS_REPLAY  = "REPLAYING"
-	REDIS_CLIENT_STATUS_OFFLINE = "OFFLINE"
+	REDIS_CLIENT_STATUS_LIVE      = "LIVE"
+	REDIS_CLIENT_STATUS_REPLAY    = "REPLAYING"
 )
 
 // ClientStream represents a connected client's stream.
@@ -62,7 +57,10 @@ func (csm *ClientStreamManager) Register(redisChannel string, clientID string, s
 		Done:     make(chan struct{}),
 	}
 	csm.streams[clientID] = cs
-	log.Printf("[INFO] ClientStreamManager: Registered stream for clientID '%s' on redis channel '%s'", clientID, redisChannel)
+	log.Info().
+		Str("clientID", clientID).
+		Str("redisChannel", redisChannel).
+		Msg("ClientStreamManager: Registered stream")
 	return cs
 }
 
@@ -77,7 +75,7 @@ func (csm *ClientStreamManager) Deregister(clientID string) {
 			close(cs.Done)
 		}
 		delete(csm.streams, clientID)
-		log.Printf("[INFO] ClientStreamManager: Deregistered stream for clientID '%s'", clientID)
+		log.Info().Str("clientID", clientID).Msg("ClientStreamManager: Deregistered stream")
 	}
 }
 
@@ -93,32 +91,29 @@ func (csm *ClientStreamManager) GetStream(clientID string) (*ClientStream, bool)
 func (csm *ClientStreamManager) SendToClient(clientID string, resp *pb.EventResponse) error {
 	cs, ok := csm.GetStream(clientID)
 	if !ok {
-		log.Printf("[WARN] ClientStreamManager: Client stream not found for clientID during SendToClient: %s", clientID)
+		log.Warn().Str("clientID", clientID).Msg("ClientStreamManager: Client stream not found during SendToClient")
 		return fmt.Errorf("client stream not found for clientID: %s", clientID)
 	}
 
 	select {
 	case <-cs.Done:
-		log.Printf("[WARN] ClientStreamManager: Attempted to send to a closed/done stream for clientID: %s", clientID)
+		log.Warn().Str("clientID", clientID).Msg("ClientStreamManager: Attempted to send to a closed/done stream")
 		return fmt.Errorf("stream for clientID %s is already closed/done", clientID)
 	default:
-		// Proceed with send
 		if err := cs.Stream.Send(resp); err != nil {
-			log.Printf("[ERROR] ClientStreamManager: Failed to send message to clientID %s: %v", clientID, err)
+			log.Error().Err(err).Str("clientID", clientID).Msg("ClientStreamManager: Failed to send message to client")
 			return fmt.Errorf("failed to send to client stream for %s: %w", clientID, err)
 		}
 		return nil
 	}
 }
 
-// handleClientConnection sets up the initial state for a client in Redis
-// and implements the "Dam and Drain" logic.
+// handleClientConnection sets up the initial state for a client in Redis.
 func (s *Server) handleClientConnection(ctx context.Context, clientID string) error {
 	newPodChannel := s.appConfig.RedisResultsChannel
 	statusKey := clientID + redisStatusKeySuffix
 	locationKey := clientID + redisLocationKeySuffix
 
-	// Get the client's PREVIOUS location before we do anything else.
 	previousLocation, err := redisclient.GetKeyValue(ctx, locationKey)
 	if err != nil && !errors.Is(err, redis.Nil) {
 		return status.Errorf(codes.Internal, "failed to get previous client location: %v", err)
@@ -127,24 +122,18 @@ func (s *Server) handleClientConnection(ctx context.Context, clientID string) er
 	isNewConnection := errors.Is(err, redis.Nil)
 	isDifferentPod := !isNewConnection && (previousLocation != newPodChannel)
 
-	// --- TRIGGER REPLAY: If the client was connected before, but to a DIFFERENT pod/channel. ---
 	if isDifferentPod {
-		log.Printf("[INFO] ProcessEvent: Reconnection to a new pod detected for client '%s'. Initiating replay.", clientID)
-		// The "Dam and Drain" Logic: Just set the status to REPLAYING.
-		// The StatusManager is now responsible for determining when the replay is truly complete.
+		log.Info().Str("clientID", clientID).Msg("Reconnection to a new pod detected. Initiating replay.")
 		if err := redisclient.SetKeyValue(ctx, statusKey, REDIS_CLIENT_STATUS_REPLAY); err != nil {
 			return status.Errorf(codes.Internal, "failed to set client status to REPLAYING: %v", err)
 		}
 	} else if isNewConnection {
-		// --- NO REPLAY NEEDED: This is a brand new client. ---
-		log.Printf("[INFO] ProcessEvent: New client detected '%s'. Setting status to LIVE.", clientID)
+		log.Info().Str("clientID", clientID).Msg("New client detected. Setting status to LIVE.")
 		if err := redisclient.SetKeyValue(ctx, statusKey, REDIS_CLIENT_STATUS_LIVE); err != nil {
-			return status.Errorf(codes.Internal, "failed to set client status to LIVE: %v", err)
+			return status.Errorf(codes.Internal, "failed to set new client status to LIVE: %v", err)
 		}
 	}
-	// If it's a reconnect to the same pod, we do nothing to the status, just update the location.
 
-	// Always update the location to the current pod channel.
 	if err := redisclient.SetKeyValue(ctx, locationKey, newPodChannel); err != nil {
 		return status.Errorf(codes.Internal, "failed to update client location: %v", err)
 	}
@@ -153,14 +142,12 @@ func (s *Server) handleClientConnection(ctx context.Context, clientID string) er
 }
 
 // handleClientDisconnection cleans up the client's state in Redis.
-func (s *Server) handleClientDisconnection(ctx context.Context, clientID string) {
-	log.Printf("[INFO] ProcessEvent: Disconnecting client '%s'. Cleaning up Redis state.", clientID)
+func (s *Server) handleClientDisconnection(clientID string) {
+	cleanupCtx := context.Background()
+	log.Info().Str("clientID", clientID).Msg("Disconnecting client. Cleaning up Redis state.")
 
-	// On disconnect, we only remove the client's location.
-	// We leave the -status key alone. If it was LIVE, the next connection will see that.
-	// If it was REPLAYING, we want it to stay that way so the replay continues on next connect.
-	if err := redisclient.DeleteKey(ctx, clientID+redisLocationKeySuffix); err != nil {
-		log.Printf("[ERROR] ProcessEvent: Failed to delete location key for '%s': %v", clientID, err)
+	if err := redisclient.DeleteKey(cleanupCtx, clientID+redisLocationKeySuffix); err != nil {
+		log.Error().Err(err).Str("clientID", clientID).Msg("Failed to delete location key")
 	}
 }
 
@@ -179,36 +166,36 @@ func (s *Server) ProcessEvent(stream pb.NimbusService_ProcessEventServer) error 
 	}
 	clientID := clientIDValues[0]
 
-	// Register stream and setup deferred cleanup
 	_ = s.clientStreamManager.Register(s.appConfig.RedisResultsChannel, clientID, stream)
 	defer s.clientStreamManager.Deregister(clientID)
-	defer s.handleClientDisconnection(ctx, clientID)
+	defer s.handleClientDisconnection(clientID)
 
-	// MODIFIED: Centralized connection handling logic.
 	if err := s.handleClientConnection(ctx, clientID); err != nil {
-		log.Printf("[ERROR] ProcessEvent: Failed during client connection setup for '%s': %v", clientID, err)
+		log.Error().Err(err).Str("clientID", clientID).Msg("Failed during client connection setup")
 		return err
 	}
 
-	// Goroutine to handle context cancellation (client disconnect, server shutdown)
 	go func() {
 		<-ctx.Done()
-		log.Printf("[INFO] ProcessEvent: Stream context done for clientID '%s'. Error: %v", clientID, ctx.Err())
+		log.Info().Str("clientID", clientID).Err(ctx.Err()).Msg("Stream context done")
 	}()
 
-	// Main loop to receive events from the client.
 	for {
 		req, err := stream.Recv()
 		if err != nil {
 			if errors.Is(err, io.EOF) || status.Code(err) == codes.Canceled {
-				log.Printf("[INFO] ProcessEvent: Client '%s' closed the stream.", clientID)
-				return nil // Clean disconnect.
+				log.Info().Str("clientID", clientID).Msg("Client closed the stream.")
+				return nil
 			}
-			log.Printf("[ERROR] ProcessEvent: Error receiving message from client '%s': %v", clientID, err)
+			log.Error().Err(err).Str("clientID", clientID).Msg("Error receiving message from client")
 			return status.Errorf(codes.Internal, "error receiving message: %v", err)
 		}
 
-		log.Printf("[INFO] ProcessEvent: Received '%s' event from client '%s' for number %d", req.EventName, clientID, req.Number)
+		log.Info().
+			Str("clientID", clientID).
+			Str("eventName", req.EventName).
+			Int32("number", req.Number).
+			Msg("Received event from client")
 
 		switch strings.ToLower(req.EventName) {
 		case "sq":
@@ -219,12 +206,12 @@ func (s *Server) ProcessEvent(stream pb.NimbusService_ProcessEventServer) error 
 				RedisChannel: s.appConfig.RedisResultsChannel,
 			}
 			if err := kafkaproducer.SendEventToDefaultTopic(kafkaReq); err != nil {
-				log.Printf("[ERROR] ProcessEvent: Failed to send event to Kafka for client '%s': %v", clientID, err)
+				log.Error().Err(err).Str("clientID", clientID).Msg("Failed to send event to Kafka")
 			} else {
-				log.Printf("[DEBUG] ProcessEvent: Event for client '%s' sent to Kafka.", clientID)
+				log.Debug().Str("clientID", clientID).Msg("Event sent to Kafka.")
 			}
 		default:
-			log.Printf("[WARN] ProcessEvent: Received unknown event name '%s' from client '%s'", req.EventName, clientID)
+			log.Warn().Str("clientID", clientID).Str("eventName", req.EventName).Msg("Received unknown event name")
 		}
 	}
 }

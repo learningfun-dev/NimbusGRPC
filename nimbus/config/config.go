@@ -2,12 +2,12 @@ package config
 
 import (
 	"fmt"
-	"log"
 	"os"
 	"strconv"
 	"time"
 
 	"github.com/joho/godotenv"
+	"github.com/rs/zerolog/log"
 )
 
 // Constants for default configuration values.
@@ -36,10 +36,12 @@ type Config struct {
 
 // Load loads configuration from environment variables, falling back to defaults.
 func Load() (*Config, error) {
+
 	err := godotenv.Load() // Tries to load .env from current directory
 	if err != nil {
-		log.Println("[INFO] No .env file found or error loading .env, using system environment variables or defaults.")
+		log.Info().Msg("No .env file found or error loading .env, using system environment variables or defaults.")
 	}
+
 	cfg := &Config{
 		Port:                DefaultPort,
 		RedisAddress:        DefaultRedisAddress,
@@ -95,7 +97,10 @@ func Load() (*Config, error) {
 		seconds, err := strconv.Atoi(shutdownTimeoutEnv)
 		if err != nil {
 			// Handle the error, e.g., log it and use a default value
-			log.Printf("[WARN] Invalid NIMBUS_SHUTDOWN_TIMEOUT_SEC value '%s': %v. Using default.", shutdownTimeoutEnv, err)
+			log.Warn().
+				Str("value", shutdownTimeoutEnv).
+				Err(err).
+				Msg("Invalid NIMBUS_SHUTDOWN_TIMEOUT_SEC value. Using default.")
 			cfg.ShutdownTimeout = DefaultShutdownTimeout // Or some other default
 		} else {
 			cfg.ShutdownTimeout = time.Duration(seconds) * time.Second
@@ -105,7 +110,16 @@ func Load() (*Config, error) {
 		cfg.ShutdownTimeout = DefaultShutdownTimeout
 	}
 
-	log.Printf("[INFO] Configuration loaded: Port=%d, RedisAddress=%s, KafkaBrokers=%s, RedisResultsChannel=%s, KafkaEventsTopic=%s, KafkaResultsTopic=%s, ShutdownTimeout=%s",
-		cfg.Port, cfg.RedisAddress, cfg.KafkaBrokers, cfg.RedisResultsChannel, cfg.KafkaEventsTopic, cfg.KafkaResultsTopic, cfg.ShutdownTimeout)
+	log.Info().
+		Int("port", cfg.Port).
+		Str("redis_address", cfg.RedisAddress).
+		Str("kafka_brokers", cfg.KafkaBrokers).
+		Str("redis_results_channel", cfg.RedisResultsChannel).
+		Str("kafka_events_topic", cfg.KafkaEventsTopic).
+		Str("kafka_results_topic", cfg.KafkaResultsTopic).
+		Str("kafka_dlq_topic", cfg.KafkaDLQTopic).
+		Dur("shutdown_timeout", cfg.ShutdownTimeout).
+		Msg("Configuration loaded")
+
 	return cfg, nil
 }

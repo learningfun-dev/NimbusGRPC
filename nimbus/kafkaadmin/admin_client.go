@@ -4,12 +4,12 @@ import (
 	"context"
 	"fmt"
 	"hash/fnv"
-	"log"
 	"sync"
 	"time"
 
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
 	"github.com/learningfun-dev/NimbusGRPC/nimbus/config"
+	"github.com/rs/zerolog/log"
 )
 
 var (
@@ -21,15 +21,15 @@ var (
 // InitAdminClient initializes the singleton Kafka Admin Client
 func InitAdminClient(cfg *config.Config) error {
 	adminClientOnce.Do(func() {
-		log.Println("[INFO] KafkaAdmin: Initializing Admin Client...")
+		log.Info().Msg("KafkaAdmin: Initializing Admin Client...")
 		ac, err := kafka.NewAdminClient(&kafka.ConfigMap{"bootstrap.servers": cfg.KafkaBrokers})
 		if err != nil {
 			initErr = fmt.Errorf("failed to create Kafka Admin Client: %w", err)
-			log.Printf("[FATAL] KafkaAdmin: %v", initErr)
+			log.Fatal().Err(initErr).Msg("KafkaAdmin: Failed to create Kafka Admin Client")
 			return
 		}
 		adminClient = ac
-		log.Println("[INFO] KafkaAdmin: Admin Client initialized successfully.")
+		log.Info().Msg("KafkaAdmin: Admin Client initialized successfully.")
 	})
 	return initErr
 }
@@ -37,7 +37,7 @@ func InitAdminClient(cfg *config.Config) error {
 // GetAdminClient returns the singleton Kafka Admin Client instance.
 func GetAdminClient() *kafka.AdminClient {
 	if adminClient == nil {
-		log.Fatal("[FATAL] KafkaAdmin: GetAdminClient called before successful initialization.")
+		log.Fatal().Msg("KafkaAdmin: GetAdminClient called before successful initialization.")
 		return nil
 	}
 	return adminClient
@@ -46,24 +46,21 @@ func GetAdminClient() *kafka.AdminClient {
 // CloseAdminClient closes the Kafka Admin Client connection.
 func CloseAdminClient() {
 	if adminClient != nil {
-		log.Println("[INFO] KafkaAdmin: Closing Admin Client...")
+		log.Info().Msg("KafkaAdmin: Closing Admin Client...")
 		adminClient.Close()
 	}
 }
 
 // getTopicMetadata retrieves metadata for a specific topic, primarily to get partition count.
-func getTopicMetadata(ctx context.Context, topic string, ac *kafka.AdminClient) (*kafka.Metadata, error) {
-	_, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-
+func getTopicMetadata(ctx context.Context, topic string) (*kafka.Metadata, error) {
+	ac := GetAdminClient()
 	return ac.GetMetadata(&topic, false, 5000) // 5-second request timeout
 }
 
 // GetPartitionForClientKey determines the target partition for a given key.
 // This is necessary for the gRPC server to know which partition's offset to check.
 func GetPartitionForClientKey(ctx context.Context, topic string, key string) (int32, error) {
-	ac := GetAdminClient()
-	metadata, err := getTopicMetadata(ctx, topic, ac)
+	metadata, err := getTopicMetadata(ctx, topic)
 	if err != nil {
 		return -1, fmt.Errorf("could not get metadata for topic %s: %w", topic, err)
 	}
@@ -107,9 +104,10 @@ func CreateTopics(topics []string) error {
 
 	for _, result := range results {
 		if result.Error.Code() != kafka.ErrNoError && result.Error.Code() != kafka.ErrTopicAlreadyExists {
+			log.Error().Err(result.Error).Str("topic", result.Topic).Msg("Failed to create topic")
 			return fmt.Errorf("failed to create topic %s: %v", result.Topic, result.Error)
 		}
-		log.Printf("[INFO] KafkaAdmin: Topic creation result for '%s': %s", result.Topic, result.Error.String())
+		log.Info().Str("topic", result.Topic).Str("result", result.Error.String()).Msg("KafkaAdmin: Topic creation result")
 	}
 
 	return nil
@@ -143,8 +141,7 @@ func GetPartitionLag(ctx context.Context, groupID, topic string, partition int32
 		}
 	}
 
-	// CORRECTED: Get metadata properly to find a broker address.
-	md, err := ac.GetMetadata(nil, false, 5000) // Get metadata for all topics to find brokers
+	md, err := ac.GetMetadata(nil, false, 5000)
 	if err != nil {
 		return -1, fmt.Errorf("failed to get cluster metadata to create temp producer: %w", err)
 	}
@@ -164,9 +161,7 @@ func GetPartitionLag(ctx context.Context, groupID, topic string, partition int32
 		return -1, fmt.Errorf("could not query watermark offset: %w", err)
 	}
 
-	// CORRECTED: Check if the offset is a numerical value. Logical offsets are negative.
 	if int64(committedOffset) < 0 {
-		// If no offset has been committed, the lag is the total number of messages in the partition.
 		low, _, err := p.QueryWatermarkOffsets(topic, partition, 3000)
 		if err != nil {
 			return -1, fmt.Errorf("could not query low watermark offset: %w", err)
@@ -176,7 +171,7 @@ func GetPartitionLag(ctx context.Context, groupID, topic string, partition int32
 
 	lag := high - int64(committedOffset)
 	if lag < 0 {
-		return 0, nil // Lag cannot be negative.
+		return 0, nil
 	}
 
 	return lag, nil

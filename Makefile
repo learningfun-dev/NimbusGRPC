@@ -3,6 +3,7 @@ PROTO_DIR = proto
 SERVER_DIR = cmd/server
 CLIENT_DIR = cmd/client
 CONSUMER_DIR = cmd/kafkaconsumer
+REPLAY_DIR = cmd/kafkareplay
 
 ifeq ($(OS), Windows_NT)
 	SHELL := powershell.exe
@@ -17,6 +18,7 @@ ifeq ($(OS), Windows_NT)
 	SERVER_BIN = ${SERVER_DIR}.exe
 	CLIENT_BIN = ${CLIENT_DIR}.exe
 	CONSUMER_BIN = ${CONSUMER_DIR}.exe
+	REPLAY_BIN = ${REPLAY_DIR}.eve
 else
 	SHELL := bash
 	SHELL_VERSION = $(shell echo $$BASH_VERSION)
@@ -37,6 +39,7 @@ else
 	SERVER_BIN = ${SERVER_DIR}
 	CLIENT_BIN = ${CLIENT_DIR}
 	CONSUMER_BIN = ${CONSUMER_DIR}
+	REPLAY_BIN = ${REPLAY_DIR}
 endif
 
 .DEFAULT_GOAL := help
@@ -53,6 +56,7 @@ $(project):
 	go build -o ${BIN_DIR}/$@/${SERVER_BIN} ./$@/${SERVER_DIR}
 	go build -o ${BIN_DIR}/$@/${CLIENT_BIN} ./$@/${CLIENT_DIR}
 	go build -o ${BIN_DIR}/$@/${CONSUMER_BIN} ./$@/${CONSUMER_BIN}
+	go build -o ${BIN_DIR}/$@/${REPLAY_BIN} ./$@/${REPLAY_BIN}
 
 test: all ## Launch tests
 	go test ./...
@@ -90,6 +94,9 @@ start-server-redis-channel-override:
 
 start-kafka-consumer:
 	./bin/nimbus/cmd/kafkaconsumer
+
+start-kafka-replay-consumer:
+	./bin/nimbus/cmd/kafkareplay
 
 start-client1:
 	./bin/nimbus/cmd/client --client_id=manoj --start=1 --end=10
