@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/learningfun-dev/NimbusGRPC/nimbus/common"
 	pb "github.com/learningfun-dev/NimbusGRPC/nimbus/proto"
 	"github.com/rs/zerolog/log"
 	"google.golang.org/protobuf/proto"
@@ -13,6 +14,16 @@ import (
 // It uses the globally managed Redis client.
 func Publish(ctx context.Context, e *pb.KafkaEventResponse) error {
 	rdb := GetClient() // Get the initialized singleton client
+
+	// Add a structured trace step before publishing to Redis.
+	e.Log = common.Append(e.Log, common.TraceStepInfo{
+		ServiceName: "RedisPublisher",
+		MethodName:  "Publish",
+		Message:     "Publishing message to Redis channel.",
+		Metadata: map[string]string{
+			"target_redis_channel": e.RedisChannel,
+		},
+	})
 
 	// Marshal the entire protobuf message for efficient transport.
 	value, err := proto.Marshal(e)
@@ -27,7 +38,7 @@ func Publish(ctx context.Context, e *pb.KafkaEventResponse) error {
 	}
 
 	// Use SPUBLISH for Redis Cluster to ensure the message goes to the shard holding the channel.
-	// For a single-instance Redis, PUBLISH is also fine.
+	// For a single-instance Redis, PUBLISH is also fine. SSubscribe/SPublish is safer.
 	err = rdb.SPublish(ctx, e.RedisChannel, value).Err()
 	if err != nil {
 		log.Error().

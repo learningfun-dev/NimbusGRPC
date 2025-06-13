@@ -8,9 +8,9 @@ import (
 	"time"
 
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
+	"github.com/learningfun-dev/NimbusGRPC/nimbus/common"
 	"github.com/learningfun-dev/NimbusGRPC/nimbus/config"
 	"github.com/learningfun-dev/NimbusGRPC/nimbus/kafkaproducer"
-
 	pb "github.com/learningfun-dev/NimbusGRPC/nimbus/proto"
 	"github.com/rs/zerolog/log"
 	"google.golang.org/protobuf/proto"
@@ -123,12 +123,22 @@ func (ec *EventConsumer) processAndProduceResult(req *pb.KafkaEventReqest) error
 		return nil // Consider it success, we don't want to retry unknown events.
 	}
 
+	logEntry := common.Append(req.Log, common.TraceStepInfo{
+		ServiceName: "EventConsumer",
+		MethodName:  "processAndProduceResult",
+		Message:     "Event processed successfully.",
+		Metadata: map[string]string{
+			"produced_to_topic": ec.appConfig.KafkaResultsTopic,
+		},
+	})
+
 	resultEvent := &pb.KafkaEventResponse{
 		EventName:    req.EventName,
 		Number:       req.Number,
 		Result:       resultValue,
 		ClientId:     req.ClientId,
 		RedisChannel: req.RedisChannel, // Pass through the original Redis channel
+		Log:          logEntry,         // Pass the updated log along
 	}
 
 	// Produce the result to KafkaResultsTopic.

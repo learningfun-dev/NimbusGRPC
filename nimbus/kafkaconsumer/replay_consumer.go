@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
+	"github.com/learningfun-dev/NimbusGRPC/nimbus/common"
 	"github.com/learningfun-dev/NimbusGRPC/nimbus/config"
 	"github.com/learningfun-dev/NimbusGRPC/nimbus/constants"
 	pb "github.com/learningfun-dev/NimbusGRPC/nimbus/proto"
@@ -36,8 +37,7 @@ type clientReplayJob struct {
 	isPaused         bool
 	inFlightMessages *list.List
 	topicPartition   kafka.TopicPartition
-	// NEW: Store the target offset for this client's replay session.
-	targetOffset int64
+	targetOffset     int64
 }
 
 // ReplayConsumer now dispatches work to more intelligent, pipelined workers.
@@ -93,7 +93,6 @@ func (rc *ReplayConsumer) Start(ctx context.Context) {
 			log.Info().Msg("ReplayConsumer: Dispatcher shutting down.")
 			run = false
 		default:
-			// CORRECTED: The ReadMessage call is now inside the default case, making it reachable.
 			msg, err := rc.consumer.ReadMessage(1 * time.Second)
 			if err != nil {
 				if kerr, ok := err.(kafka.Error); ok && kerr.Code() == kafka.ErrTimedOut {
@@ -124,7 +123,7 @@ func (rc *ReplayConsumer) Start(ctx context.Context) {
 func (rc *ReplayConsumer) newReplayJob(ctx context.Context, clientID string) *clientReplayJob {
 	jobCtx, cancel := context.WithCancel(ctx)
 
-	// --- NEW LOGIC: Get the "finish line" offset when the job starts. ---
+	// Get the "finish line" offset when the job starts.
 	targetOffsetStr, err := redisclient.GetKeyValue(ctx, clientID+constants.RedisTargetOffsetKeySuffix)
 	if err != nil {
 		log.Error().Err(err).Str("clientID", clientID).Msg("Could not get target offset for new replay job. Replay may not complete.")
@@ -161,7 +160,7 @@ func (j *clientReplayJob) run() {
 	for {
 		select {
 		case <-ackTicker.C:
-			j.checkAcksAndCompleteReplay() // Modified function name
+			j.checkAcksAndCompleteReplay()
 		case msg, ok := <-j.msgChannel:
 			if !ok {
 				return
@@ -178,7 +177,6 @@ func (j *clientReplayJob) handleMessage(msg *kafka.Message) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 
-	// NEW: Store the partition info so we can always resume it.
 	j.topicPartition = msg.TopicPartition
 
 	if j.inFlightMessages.Len() >= maxInFlightMessages && !j.isPaused {
@@ -310,6 +308,17 @@ func (j *clientReplayJob) publishMessageToRedis(msg *kafka.Message) error {
 
 	eventResp.RedisChannel = podChannel
 	eventResp.KafkaOffset = int64(msg.TopicPartition.Offset)
+
+	// Add a structured trace step.
+	eventResp.Log = common.Append(eventResp.Log, common.TraceStepInfo{
+		ServiceName: "ReplayConsumer",
+		MethodName:  "publishMessageToRedis",
+		Message:     "Replaying message from DLQ to Redis.",
+		Metadata: map[string]string{
+			"target_redis_channel": eventResp.RedisChannel,
+			"kafka_offset":         strconv.FormatInt(eventResp.KafkaOffset, 10),
+		},
+	})
 
 	return redisclient.Publish(ctx, &eventResp)
 }

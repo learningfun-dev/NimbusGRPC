@@ -3,8 +3,11 @@ package redisclient
 import (
 	"context"
 	"net"
+	"strconv"
 	"time"
 
+	"github.com/learningfun-dev/NimbusGRPC/nimbus/common"
+	"github.com/learningfun-dev/NimbusGRPC/nimbus/constants"
 	pb "github.com/learningfun-dev/NimbusGRPC/nimbus/proto"
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog/log"
@@ -42,13 +45,11 @@ func NewRedisSubscriber(rdb *redis.Client, channelName string, sm StreamSender) 
 	}
 }
 
-// Start begins subscribing to the Redis channel and processing messages.
-// It runs until the provided context is canceled.
+// Start begins the message consumption loop.
 func (rs *RedisSubscriber) Start(ctx context.Context) {
 	log.Info().Str("channel", rs.channel).Msg("RedisSubscriber: Starting subscription")
 	var pubsub *redis.PubSub
 
-	// Reconnection loop
 	for {
 		select {
 		case <-ctx.Done():
@@ -60,23 +61,18 @@ func (rs *RedisSubscriber) Start(ctx context.Context) {
 			}
 			return
 		default:
-			// Attempt to subscribe
 			if pubsub == nil {
-
 				pubsub = rs.redisClient.SSubscribe(ctx, rs.channel)
-				// Check for initial subscription error
-				_, err := pubsub.Receive(ctx) // This is a control message from go-redis
+				_, err := pubsub.Receive(ctx)
 				if err != nil {
 					log.Error().Err(err).Str("channel", rs.channel).Msg("RedisSubscriber: Failed to subscribe. Retrying in 5s...")
 					if pubsub != nil {
 						_ = pubsub.Close()
 						pubsub = nil
 					}
-					// Respect context cancellation during sleep
 					select {
-					case <-time.After(5 * time.Second): // Backoff before retrying
+					case <-time.After(5 * time.Second):
 					case <-ctx.Done():
-						log.Info().Str("channel", rs.channel).Msg("RedisSubscriber: Context canceled during retry backoff.")
 						return
 					}
 					continue
@@ -84,8 +80,7 @@ func (rs *RedisSubscriber) Start(ctx context.Context) {
 				log.Info().Str("channel", rs.channel).Msg("RedisSubscriber: Successfully subscribed")
 			}
 
-			// Receive message with timeout to allow checking ctx.Done periodically
-			msg, err := pubsub.ReceiveTimeout(ctx, 1*time.Second) // Use ReceiveTimeout
+			msg, err := pubsub.ReceiveTimeout(ctx, 1*time.Second)
 			if err != nil {
 				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 					continue
@@ -117,10 +112,21 @@ func (rs *RedisSubscriber) processRedisMessage(ctx context.Context, payload stri
 		Int64("offset", kafkaEventResp.KafkaOffset).
 		Msg("RedisSubscriber: Decoded message from Redis")
 
+	// Add a structured trace step.
+	kafkaEventResp.Log = common.Append(kafkaEventResp.Log, common.TraceStepInfo{
+		ServiceName: "RedisSubscriber",
+		MethodName:  "processRedisMessage",
+		Message:     "Received message from Redis, preparing to send to client.",
+		Metadata: map[string]string{
+			"redis_channel": rs.channel,
+		},
+	})
+
 	eventResp := &pb.EventResponse{
 		EventName: kafkaEventResp.EventName,
 		Number:    kafkaEventResp.Number,
 		Result:    kafkaEventResp.Result,
+		Log:       kafkaEventResp.Log, // Pass the updated log entry
 	}
 
 	// Send the message to the client.
@@ -132,9 +138,9 @@ func (rs *RedisSubscriber) processRedisMessage(ctx context.Context, payload stri
 
 	// If the message has a Kafka offset, it means it's a replayed message that requires an ACK.
 	if kafkaEventResp.KafkaOffset > 0 {
-		ackKey := kafkaEventResp.ClientId + "-last-acked-offset"
+		ackKey := kafkaEventResp.ClientId + constants.RedisLastAckedOffsetKeySuffix
 		// Acknowledge the specific offset that was successfully delivered.
-		err = SetKeyValue(context.Background(), ackKey, kafkaEventResp.KafkaOffset)
+		err = SetKeyValue(context.Background(), ackKey, strconv.FormatInt(kafkaEventResp.KafkaOffset, 10))
 		if err != nil {
 			log.Error().
 				Err(err).

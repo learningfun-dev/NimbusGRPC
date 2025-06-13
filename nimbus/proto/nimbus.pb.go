@@ -9,6 +9,7 @@ package proto
 import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
+	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
@@ -21,6 +22,134 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type TraceStep struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Timestamp     *timestamppb.Timestamp `protobuf:"bytes,1,opt,name=timestamp,proto3" json:"timestamp,omitempty"`
+	ServiceName   string                 `protobuf:"bytes,2,opt,name=service_name,json=serviceName,proto3" json:"service_name,omitempty"`
+	InstanceId    string                 `protobuf:"bytes,3,opt,name=instance_id,json=instanceId,proto3" json:"instance_id,omitempty"`
+	MethodName    string                 `protobuf:"bytes,4,opt,name=method_name,json=methodName,proto3" json:"method_name,omitempty"`
+	Message       string                 `protobuf:"bytes,5,opt,name=message,proto3" json:"message,omitempty"`
+	Metadata      map[string]string      `protobuf:"bytes,6,rep,name=metadata,proto3" json:"metadata,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TraceStep) Reset() {
+	*x = TraceStep{}
+	mi := &file_nimbus_proto_msgTypes[0]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TraceStep) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TraceStep) ProtoMessage() {}
+
+func (x *TraceStep) ProtoReflect() protoreflect.Message {
+	mi := &file_nimbus_proto_msgTypes[0]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TraceStep.ProtoReflect.Descriptor instead.
+func (*TraceStep) Descriptor() ([]byte, []int) {
+	return file_nimbus_proto_rawDescGZIP(), []int{0}
+}
+
+func (x *TraceStep) GetTimestamp() *timestamppb.Timestamp {
+	if x != nil {
+		return x.Timestamp
+	}
+	return nil
+}
+
+func (x *TraceStep) GetServiceName() string {
+	if x != nil {
+		return x.ServiceName
+	}
+	return ""
+}
+
+func (x *TraceStep) GetInstanceId() string {
+	if x != nil {
+		return x.InstanceId
+	}
+	return ""
+}
+
+func (x *TraceStep) GetMethodName() string {
+	if x != nil {
+		return x.MethodName
+	}
+	return ""
+}
+
+func (x *TraceStep) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+func (x *TraceStep) GetMetadata() map[string]string {
+	if x != nil {
+		return x.Metadata
+	}
+	return nil
+}
+
+type LogEntry struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Steps         []*TraceStep           `protobuf:"bytes,1,rep,name=steps,proto3" json:"steps,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *LogEntry) Reset() {
+	*x = LogEntry{}
+	mi := &file_nimbus_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LogEntry) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LogEntry) ProtoMessage() {}
+
+func (x *LogEntry) ProtoReflect() protoreflect.Message {
+	mi := &file_nimbus_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LogEntry.ProtoReflect.Descriptor instead.
+func (*LogEntry) Descriptor() ([]byte, []int) {
+	return file_nimbus_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *LogEntry) GetSteps() []*TraceStep {
+	if x != nil {
+		return x.Steps
+	}
+	return nil
+}
+
 type EventRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	EventName     string                 `protobuf:"bytes,1,opt,name=event_name,json=eventName,proto3" json:"event_name,omitempty"`
@@ -31,7 +160,7 @@ type EventRequest struct {
 
 func (x *EventRequest) Reset() {
 	*x = EventRequest{}
-	mi := &file_nimbus_proto_msgTypes[0]
+	mi := &file_nimbus_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -43,7 +172,7 @@ func (x *EventRequest) String() string {
 func (*EventRequest) ProtoMessage() {}
 
 func (x *EventRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_nimbus_proto_msgTypes[0]
+	mi := &file_nimbus_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -56,7 +185,7 @@ func (x *EventRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EventRequest.ProtoReflect.Descriptor instead.
 func (*EventRequest) Descriptor() ([]byte, []int) {
-	return file_nimbus_proto_rawDescGZIP(), []int{0}
+	return file_nimbus_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *EventRequest) GetEventName() string {
@@ -78,13 +207,14 @@ type EventResponse struct {
 	EventName     string                 `protobuf:"bytes,1,opt,name=event_name,json=eventName,proto3" json:"event_name,omitempty"`
 	Number        int32                  `protobuf:"varint,2,opt,name=number,proto3" json:"number,omitempty"`
 	Result        int32                  `protobuf:"varint,3,opt,name=result,proto3" json:"result,omitempty"`
+	Log           *LogEntry              `protobuf:"bytes,4,opt,name=log,proto3" json:"log,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *EventResponse) Reset() {
 	*x = EventResponse{}
-	mi := &file_nimbus_proto_msgTypes[1]
+	mi := &file_nimbus_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -96,7 +226,7 @@ func (x *EventResponse) String() string {
 func (*EventResponse) ProtoMessage() {}
 
 func (x *EventResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_nimbus_proto_msgTypes[1]
+	mi := &file_nimbus_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -109,7 +239,7 @@ func (x *EventResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EventResponse.ProtoReflect.Descriptor instead.
 func (*EventResponse) Descriptor() ([]byte, []int) {
-	return file_nimbus_proto_rawDescGZIP(), []int{1}
+	return file_nimbus_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *EventResponse) GetEventName() string {
@@ -133,19 +263,27 @@ func (x *EventResponse) GetResult() int32 {
 	return 0
 }
 
+func (x *EventResponse) GetLog() *LogEntry {
+	if x != nil {
+		return x.Log
+	}
+	return nil
+}
+
 type KafkaEventReqest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	EventName     string                 `protobuf:"bytes,1,opt,name=event_name,json=eventName,proto3" json:"event_name,omitempty"`
 	Number        int32                  `protobuf:"varint,2,opt,name=number,proto3" json:"number,omitempty"`
 	ClientId      string                 `protobuf:"bytes,3,opt,name=client_id,json=clientId,proto3" json:"client_id,omitempty"`
 	RedisChannel  string                 `protobuf:"bytes,4,opt,name=redis_channel,json=redisChannel,proto3" json:"redis_channel,omitempty"`
+	Log           *LogEntry              `protobuf:"bytes,5,opt,name=log,proto3" json:"log,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *KafkaEventReqest) Reset() {
 	*x = KafkaEventReqest{}
-	mi := &file_nimbus_proto_msgTypes[2]
+	mi := &file_nimbus_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -157,7 +295,7 @@ func (x *KafkaEventReqest) String() string {
 func (*KafkaEventReqest) ProtoMessage() {}
 
 func (x *KafkaEventReqest) ProtoReflect() protoreflect.Message {
-	mi := &file_nimbus_proto_msgTypes[2]
+	mi := &file_nimbus_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -170,7 +308,7 @@ func (x *KafkaEventReqest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use KafkaEventReqest.ProtoReflect.Descriptor instead.
 func (*KafkaEventReqest) Descriptor() ([]byte, []int) {
-	return file_nimbus_proto_rawDescGZIP(), []int{2}
+	return file_nimbus_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *KafkaEventReqest) GetEventName() string {
@@ -201,6 +339,13 @@ func (x *KafkaEventReqest) GetRedisChannel() string {
 	return ""
 }
 
+func (x *KafkaEventReqest) GetLog() *LogEntry {
+	if x != nil {
+		return x.Log
+	}
+	return nil
+}
+
 type KafkaEventResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	EventName     string                 `protobuf:"bytes,1,opt,name=event_name,json=eventName,proto3" json:"event_name,omitempty"`
@@ -209,13 +354,14 @@ type KafkaEventResponse struct {
 	ClientId      string                 `protobuf:"bytes,4,opt,name=client_id,json=clientId,proto3" json:"client_id,omitempty"`
 	RedisChannel  string                 `protobuf:"bytes,5,opt,name=redis_channel,json=redisChannel,proto3" json:"redis_channel,omitempty"`
 	KafkaOffset   int64                  `protobuf:"varint,6,opt,name=kafka_offset,json=kafkaOffset,proto3" json:"kafka_offset,omitempty"`
+	Log           *LogEntry              `protobuf:"bytes,7,opt,name=log,proto3" json:"log,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *KafkaEventResponse) Reset() {
 	*x = KafkaEventResponse{}
-	mi := &file_nimbus_proto_msgTypes[3]
+	mi := &file_nimbus_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -227,7 +373,7 @@ func (x *KafkaEventResponse) String() string {
 func (*KafkaEventResponse) ProtoMessage() {}
 
 func (x *KafkaEventResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_nimbus_proto_msgTypes[3]
+	mi := &file_nimbus_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -240,7 +386,7 @@ func (x *KafkaEventResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use KafkaEventResponse.ProtoReflect.Descriptor instead.
 func (*KafkaEventResponse) Descriptor() ([]byte, []int) {
-	return file_nimbus_proto_rawDescGZIP(), []int{3}
+	return file_nimbus_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *KafkaEventResponse) GetEventName() string {
@@ -285,26 +431,49 @@ func (x *KafkaEventResponse) GetKafkaOffset() int64 {
 	return 0
 }
 
+func (x *KafkaEventResponse) GetLog() *LogEntry {
+	if x != nil {
+		return x.Log
+	}
+	return nil
+}
+
 var File_nimbus_proto protoreflect.FileDescriptor
 
 const file_nimbus_proto_rawDesc = "" +
 	"\n" +
-	"\fnimbus.proto\x12\x06nimbus\"E\n" +
+	"\fnimbus.proto\x12\x06nimbus\x1a\x1fgoogle/protobuf/timestamp.proto\"\xbe\x02\n" +
+	"\tTraceStep\x128\n" +
+	"\ttimestamp\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\ttimestamp\x12!\n" +
+	"\fservice_name\x18\x02 \x01(\tR\vserviceName\x12\x1f\n" +
+	"\vinstance_id\x18\x03 \x01(\tR\n" +
+	"instanceId\x12\x1f\n" +
+	"\vmethod_name\x18\x04 \x01(\tR\n" +
+	"methodName\x12\x18\n" +
+	"\amessage\x18\x05 \x01(\tR\amessage\x12;\n" +
+	"\bmetadata\x18\x06 \x03(\v2\x1f.nimbus.TraceStep.MetadataEntryR\bmetadata\x1a;\n" +
+	"\rMetadataEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"3\n" +
+	"\bLogEntry\x12'\n" +
+	"\x05steps\x18\x01 \x03(\v2\x11.nimbus.TraceStepR\x05steps\"E\n" +
 	"\fEventRequest\x12\x1d\n" +
 	"\n" +
 	"event_name\x18\x01 \x01(\tR\teventName\x12\x16\n" +
-	"\x06number\x18\x02 \x01(\x05R\x06number\"^\n" +
+	"\x06number\x18\x02 \x01(\x05R\x06number\"\x82\x01\n" +
 	"\rEventResponse\x12\x1d\n" +
 	"\n" +
 	"event_name\x18\x01 \x01(\tR\teventName\x12\x16\n" +
 	"\x06number\x18\x02 \x01(\x05R\x06number\x12\x16\n" +
-	"\x06result\x18\x03 \x01(\x05R\x06result\"\x8b\x01\n" +
+	"\x06result\x18\x03 \x01(\x05R\x06result\x12\"\n" +
+	"\x03log\x18\x04 \x01(\v2\x10.nimbus.LogEntryR\x03log\"\xaf\x01\n" +
 	"\x10KafkaEventReqest\x12\x1d\n" +
 	"\n" +
 	"event_name\x18\x01 \x01(\tR\teventName\x12\x16\n" +
 	"\x06number\x18\x02 \x01(\x05R\x06number\x12\x1b\n" +
 	"\tclient_id\x18\x03 \x01(\tR\bclientId\x12#\n" +
-	"\rredis_channel\x18\x04 \x01(\tR\fredisChannel\"\xc8\x01\n" +
+	"\rredis_channel\x18\x04 \x01(\tR\fredisChannel\x12\"\n" +
+	"\x03log\x18\x05 \x01(\v2\x10.nimbus.LogEntryR\x03log\"\xec\x01\n" +
 	"\x12KafkaEventResponse\x12\x1d\n" +
 	"\n" +
 	"event_name\x18\x01 \x01(\tR\teventName\x12\x16\n" +
@@ -312,7 +481,8 @@ const file_nimbus_proto_rawDesc = "" +
 	"\x06result\x18\x03 \x01(\x05R\x06result\x12\x1b\n" +
 	"\tclient_id\x18\x04 \x01(\tR\bclientId\x12#\n" +
 	"\rredis_channel\x18\x05 \x01(\tR\fredisChannel\x12!\n" +
-	"\fkafka_offset\x18\x06 \x01(\x03R\vkafkaOffset2P\n" +
+	"\fkafka_offset\x18\x06 \x01(\x03R\vkafkaOffset\x12\"\n" +
+	"\x03log\x18\a \x01(\v2\x10.nimbus.LogEntryR\x03log2P\n" +
 	"\rNimbusService\x12?\n" +
 	"\fProcessEvent\x12\x14.nimbus.EventRequest\x1a\x15.nimbus.EventResponse(\x010\x01B4Z2github.com/learningfun-dev/NimbusGRPC/nimbus/protob\x06proto3"
 
@@ -328,21 +498,31 @@ func file_nimbus_proto_rawDescGZIP() []byte {
 	return file_nimbus_proto_rawDescData
 }
 
-var file_nimbus_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
+var file_nimbus_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
 var file_nimbus_proto_goTypes = []any{
-	(*EventRequest)(nil),       // 0: nimbus.EventRequest
-	(*EventResponse)(nil),      // 1: nimbus.EventResponse
-	(*KafkaEventReqest)(nil),   // 2: nimbus.KafkaEventReqest
-	(*KafkaEventResponse)(nil), // 3: nimbus.KafkaEventResponse
+	(*TraceStep)(nil),             // 0: nimbus.TraceStep
+	(*LogEntry)(nil),              // 1: nimbus.LogEntry
+	(*EventRequest)(nil),          // 2: nimbus.EventRequest
+	(*EventResponse)(nil),         // 3: nimbus.EventResponse
+	(*KafkaEventReqest)(nil),      // 4: nimbus.KafkaEventReqest
+	(*KafkaEventResponse)(nil),    // 5: nimbus.KafkaEventResponse
+	nil,                           // 6: nimbus.TraceStep.MetadataEntry
+	(*timestamppb.Timestamp)(nil), // 7: google.protobuf.Timestamp
 }
 var file_nimbus_proto_depIdxs = []int32{
-	0, // 0: nimbus.NimbusService.ProcessEvent:input_type -> nimbus.EventRequest
-	1, // 1: nimbus.NimbusService.ProcessEvent:output_type -> nimbus.EventResponse
-	1, // [1:2] is the sub-list for method output_type
-	0, // [0:1] is the sub-list for method input_type
-	0, // [0:0] is the sub-list for extension type_name
-	0, // [0:0] is the sub-list for extension extendee
-	0, // [0:0] is the sub-list for field type_name
+	7, // 0: nimbus.TraceStep.timestamp:type_name -> google.protobuf.Timestamp
+	6, // 1: nimbus.TraceStep.metadata:type_name -> nimbus.TraceStep.MetadataEntry
+	0, // 2: nimbus.LogEntry.steps:type_name -> nimbus.TraceStep
+	1, // 3: nimbus.EventResponse.log:type_name -> nimbus.LogEntry
+	1, // 4: nimbus.KafkaEventReqest.log:type_name -> nimbus.LogEntry
+	1, // 5: nimbus.KafkaEventResponse.log:type_name -> nimbus.LogEntry
+	2, // 6: nimbus.NimbusService.ProcessEvent:input_type -> nimbus.EventRequest
+	3, // 7: nimbus.NimbusService.ProcessEvent:output_type -> nimbus.EventResponse
+	7, // [7:8] is the sub-list for method output_type
+	6, // [6:7] is the sub-list for method input_type
+	6, // [6:6] is the sub-list for extension type_name
+	6, // [6:6] is the sub-list for extension extendee
+	0, // [0:6] is the sub-list for field type_name
 }
 
 func init() { file_nimbus_proto_init() }
@@ -356,7 +536,7 @@ func file_nimbus_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_nimbus_proto_rawDesc), len(file_nimbus_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   4,
+			NumMessages:   7,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

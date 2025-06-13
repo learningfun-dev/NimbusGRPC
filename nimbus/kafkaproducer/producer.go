@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
+	"github.com/learningfun-dev/NimbusGRPC/nimbus/common"
 	"github.com/learningfun-dev/NimbusGRPC/nimbus/config"
 	pb "github.com/learningfun-dev/NimbusGRPC/nimbus/proto"
 	"github.com/rs/zerolog/log"
@@ -52,7 +53,6 @@ func InitProducer(cfg *config.Config) error {
 
 	p, err := kafka.NewProducer(&kafka.ConfigMap{
 		"bootstrap.servers": cfg.KafkaBrokers,
-		// Add other relevant producer configurations for production here
 	})
 
 	if err != nil {
@@ -61,8 +61,7 @@ func InitProducer(cfg *config.Config) error {
 		return err
 	}
 	producer = p
-	defaultEventsTopic = cfg.KafkaEventsTopic // Store the default topic for requests
-	isProducerClosing = false
+	defaultEventsTopic = cfg.KafkaEventsTopic
 	isInitialized = true
 
 	go func() {
@@ -149,6 +148,12 @@ func sendMessageInternal(topic string, messageKey string, messagePayload proto.M
 
 // PublishEventRequest sends a KafkaEventRequest to the specified Kafka topic.
 func PublishEventRequest(topic string, req *pb.KafkaEventReqest) error {
+	req.Log = common.Append(req.Log, common.TraceStepInfo{
+		ServiceName: "KafkaProducer",
+		MethodName:  "PublishEventRequest",
+		Message:     "Producing event request to Kafka.",
+		Metadata:    map[string]string{"target_topic": topic},
+	})
 	if !isInitialized {
 		return fmt.Errorf("kafka producer not initialized, cannot publish event request")
 	}
@@ -161,6 +166,12 @@ func PublishEventRequest(topic string, req *pb.KafkaEventReqest) error {
 
 // PublishEventResponse sends a KafkaEventResponse to the specified Kafka topic.
 func PublishEventResponse(topic string, resp *pb.KafkaEventResponse) error {
+	resp.Log = common.Append(resp.Log, common.TraceStepInfo{
+		ServiceName: "KafkaProducer",
+		MethodName:  "PublishEventResponse",
+		Message:     "Producing event response to Kafka.",
+		Metadata:    map[string]string{"target_topic": topic},
+	})
 	if !isInitialized {
 		return fmt.Errorf("kafka producer not initialized, cannot publish event response")
 	}

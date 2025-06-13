@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/learningfun-dev/NimbusGRPC/nimbus/common"
 	"github.com/learningfun-dev/NimbusGRPC/nimbus/constants"
 	"github.com/learningfun-dev/NimbusGRPC/nimbus/kafkaproducer"
 	pb "github.com/learningfun-dev/NimbusGRPC/nimbus/proto"
@@ -201,6 +202,13 @@ func (s *Server) ProcessEvent(stream pb.NimbusService_ProcessEventServer) error 
 			Int32("number", req.Number).
 			Msg("Received event from client")
 
+		// Add a structured trace step for when the event is first received.
+		logEntry := common.Append(&pb.LogEntry{}, common.TraceStepInfo{
+			ServiceName: "gRPCServer",
+			MethodName:  "ProcessEvent",
+			Message:     "Received event from client.",
+		})
+
 		switch strings.ToLower(req.EventName) {
 		case "sq":
 			kafkaReq := &pb.KafkaEventReqest{
@@ -208,6 +216,7 @@ func (s *Server) ProcessEvent(stream pb.NimbusService_ProcessEventServer) error 
 				Number:       req.Number,
 				ClientId:     clientID,
 				RedisChannel: s.appConfig.RedisResultsChannel,
+				Log:          logEntry,
 			}
 			if err := kafkaproducer.SendEventToDefaultTopic(kafkaReq); err != nil {
 				log.Error().Err(err).Str("clientID", clientID).Msg("Failed to send event to Kafka")

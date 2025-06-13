@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
+	"github.com/learningfun-dev/NimbusGRPC/nimbus/common"
 	"github.com/learningfun-dev/NimbusGRPC/nimbus/config"
 	"github.com/learningfun-dev/NimbusGRPC/nimbus/constants"
 	"github.com/learningfun-dev/NimbusGRPC/nimbus/kafkaproducer"
@@ -121,7 +122,7 @@ func (rc *ResultConsumer) routeOrDivertResult(ctx context.Context, resp *pb.Kafk
 		return nil // Discarding is considered a successful operation for this message.
 	}
 
-	statusKey := resp.ClientId + "-status"
+	statusKey := resp.ClientId + constants.RedisStatusKeySuffix
 	clientStatus, err := redisclient.GetKeyValue(ctx, statusKey)
 	if err != nil && !errors.Is(err, redis.Nil) {
 		return fmt.Errorf("could not get client status from Redis: %w", err)
@@ -135,7 +136,7 @@ func (rc *ResultConsumer) routeOrDivertResult(ctx context.Context, resp *pb.Kafk
 		return rc.publishToDLQ(ctx, resp)
 	}
 
-	locationKey := resp.ClientId + "-location"
+	locationKey := resp.ClientId + constants.RedisLocationKeySuffix
 	currentLocation, err := redisclient.GetKeyValue(ctx, locationKey)
 	if err != nil {
 		log.Warn().
@@ -162,6 +163,16 @@ func (rc *ResultConsumer) routeOrDivertResult(ctx context.Context, resp *pb.Kafk
 }
 
 func (rc *ResultConsumer) publishToDLQ(ctx context.Context, resp *pb.KafkaEventResponse) error {
+	// Add a structured trace step before publishing to DLQ.
+	resp.Log = common.Append(resp.Log, common.TraceStepInfo{
+		ServiceName: "ResultConsumer",
+		MethodName:  "publishToDLQ",
+		Message:     "Diverting stale or offline result to DLQ.",
+		Metadata: map[string]string{
+			"target_topic": rc.appConfig.KafkaDLQTopic,
+		},
+	})
+
 	err := kafkaproducer.PublishEventResponse(rc.appConfig.KafkaDLQTopic, resp)
 	if err != nil {
 		log.Error().
@@ -185,6 +196,17 @@ func (rc *ResultConsumer) publishToRedis(ctx context.Context, resp *pb.KafkaEven
 			Msg("Cannot publish to Redis because RedisChannel is empty. Diverting to DLQ.")
 		return rc.publishToDLQ(ctx, resp)
 	}
+
+	// Add a structured trace step before publishing to Redis.
+	resp.Log = common.Append(resp.Log, common.TraceStepInfo{
+		ServiceName: "ResultConsumer",
+		MethodName:  "publishToRedis",
+		Message:     "Publishing live result to Redis for delivery.",
+		Metadata: map[string]string{
+			"target_redis_channel": resp.RedisChannel,
+		},
+	})
+
 	err := redisclient.Publish(ctx, resp)
 	if err != nil {
 		log.Error().
