@@ -112,3 +112,70 @@ func CreateTopics(topics []string) error {
 
 	return nil
 }
+
+// GetPartitionLag calculates the consumer lag for a specific group on a specific topic/partition.
+func GetPartitionLag(ctx context.Context, groupID, topic string, partition int32) (int64, error) {
+	ac := GetAdminClient()
+	ctxWithTimeout, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	result, err := ac.ListConsumerGroupOffsets(ctxWithTimeout, []kafka.ConsumerGroupTopicPartitions{
+		{
+			Group: groupID,
+			Partitions: []kafka.TopicPartition{
+				{Topic: &topic, Partition: partition},
+			},
+		},
+	})
+	if err != nil {
+		return -1, fmt.Errorf("failed to list group offsets: %w", err)
+	}
+
+	var committedOffset kafka.Offset = -1
+	if len(result.ConsumerGroupsTopicPartitions) > 0 {
+		for _, p := range result.ConsumerGroupsTopicPartitions[0].Partitions {
+			if p.Topic != nil && *p.Topic == topic && p.Partition == partition {
+				committedOffset = p.Offset
+				break
+			}
+		}
+	}
+
+	// Get metadata properly to find a broker address.
+	md, err := ac.GetMetadata(nil, false, 5000) // Get metadata for all topics to find brokers
+	if err != nil {
+		return -1, fmt.Errorf("failed to get cluster metadata to create temp producer: %w", err)
+	}
+	if len(md.Brokers) == 0 {
+		return -1, fmt.Errorf("no brokers found in cluster metadata")
+	}
+
+	brokerAddress := fmt.Sprintf("%s:%d", md.Brokers[0].Host, md.Brokers[0].Port)
+	p, err := kafka.NewProducer(&kafka.ConfigMap{"bootstrap.servers": brokerAddress})
+	if err != nil {
+		return -1, fmt.Errorf("failed to create temporary producer for offset query: %w", err)
+	}
+	defer p.Close()
+
+	_, high, err := p.QueryWatermarkOffsets(topic, partition, 3000)
+	if err != nil {
+		return -1, fmt.Errorf("could not query watermark offset: %w", err)
+	}
+
+	// Check if the offset is a numerical value. Logical offsets are negative.
+	if int64(committedOffset) < 0 {
+		// If no offset has been committed, the lag is the total number of messages in the partition.
+		low, _, err := p.QueryWatermarkOffsets(topic, partition, 3000)
+		if err != nil {
+			return -1, fmt.Errorf("could not query low watermark offset: %w", err)
+		}
+		return high - low, nil
+	}
+
+	lag := high - int64(committedOffset)
+	if lag < 0 {
+		return 0, nil // Lag cannot be negative.
+	}
+
+	return lag, nil
+}

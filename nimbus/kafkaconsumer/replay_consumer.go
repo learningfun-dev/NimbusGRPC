@@ -25,7 +25,7 @@ const (
 	maxInFlightMessages = 500
 )
 
-// clientReplayJob now manages the state for pipelined processing.
+// clientReplayJob now only manages the pipelined processing state.
 type clientReplayJob struct {
 	clientID         string
 	msgChannel       chan *kafka.Message
@@ -37,10 +37,9 @@ type clientReplayJob struct {
 	isPaused         bool
 	inFlightMessages *list.List
 	topicPartition   kafka.TopicPartition
-	targetOffset     int64
 }
 
-// ReplayConsumer now dispatches work to more intelligent, pipelined workers.
+// ReplayConsumer now dispatches work to pipelined workers.
 type ReplayConsumer struct {
 	consumer      *kafka.Consumer
 	appConfig     *config.Config
@@ -122,16 +121,6 @@ func (rc *ReplayConsumer) Start(ctx context.Context) {
 // newReplayJob now fetches the target offset when it's created.
 func (rc *ReplayConsumer) newReplayJob(ctx context.Context, clientID string) *clientReplayJob {
 	jobCtx, cancel := context.WithCancel(ctx)
-
-	// Get the "finish line" offset when the job starts.
-	targetOffsetStr, err := redisclient.GetKeyValue(ctx, clientID+constants.RedisTargetOffsetKeySuffix)
-	if err != nil {
-		log.Error().Err(err).Str("clientID", clientID).Msg("Could not get target offset for new replay job. Replay may not complete.")
-		// We still create the job, but it will likely never finish without a target.
-		// A robust system might re-queue this client for setup.
-	}
-	targetOffset, _ := strconv.ParseInt(targetOffsetStr, 10, 64)
-
 	job := &clientReplayJob{
 		clientID:         clientID,
 		msgChannel:       make(chan *kafka.Message, maxInFlightMessages),
@@ -140,9 +129,7 @@ func (rc *ReplayConsumer) newReplayJob(ctx context.Context, clientID string) *cl
 		consumer:         rc.consumer,
 		wg:               rc.wg,
 		inFlightMessages: list.New(),
-		targetOffset:     targetOffset, // Store the finish line
 	}
-
 	rc.wg.Add(1)
 	go job.run()
 	return job
@@ -152,7 +139,7 @@ func (rc *ReplayConsumer) newReplayJob(ctx context.Context, clientID string) *cl
 func (j *clientReplayJob) run() {
 	defer j.wg.Done()
 	defer j.resumePartition()
-	log.Info().Str("clientID", j.clientID).Int64("targetOffset", j.targetOffset).Msg("Starting dedicated replay processor goroutine.")
+	log.Info().Str("clientID", j.clientID).Msg("Starting dedicated replay processor goroutine.")
 
 	ackTicker := time.NewTicker(ackCheckInterval)
 	defer ackTicker.Stop()
@@ -160,7 +147,7 @@ func (j *clientReplayJob) run() {
 	for {
 		select {
 		case <-ackTicker.C:
-			j.checkAcksAndCompleteReplay()
+			j.checkAcks() // Just checks and commits, no completion logic.
 		case msg, ok := <-j.msgChannel:
 			if !ok {
 				return
@@ -193,9 +180,8 @@ func (j *clientReplayJob) handleMessage(msg *kafka.Message) {
 	}
 }
 
-// checkAcksAndCompleteReplay is the new core logic.
-// It checks ACKs, commits offsets, and determines if the replay is finished.
-func (j *clientReplayJob) checkAcksAndCompleteReplay() {
+// checkAcks now only checks for ACKs, commits, and resumes. It does NOT check for completion.
+func (j *clientReplayJob) checkAcks() {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 
@@ -229,21 +215,6 @@ func (j *clientReplayJob) checkAcksAndCompleteReplay() {
 		if _, err := j.consumer.CommitMessage(lastCommittedMsg); err != nil {
 			log.Fatal().Err(err).Str("clientID", j.clientID).Msg("ReplayConsumer: CRITICAL - Failed to commit offset after batch ACK.")
 		}
-
-		// After a successful commit, check if we have reached the finish line.
-		if int64(lastCommittedMsg.TopicPartition.Offset) >= j.targetOffset {
-			log.Info().
-				Str("clientID", j.clientID).
-				Int64("lastAckedOffset", lastAckedOffset).
-				Int64("targetOffset", j.targetOffset).
-				Msg("Replay for client is complete. Transitioning status to LIVE.")
-
-			// Transition status to LIVE and cleanup.
-			j.completeReplay()
-
-			// Cancel this worker's context to shut it down gracefully.
-			j.cancelFunc()
-		}
 	}
 
 	if j.isPaused && j.inFlightMessages.Len() < (maxInFlightMessages/2) {
@@ -253,23 +224,6 @@ func (j *clientReplayJob) checkAcksAndCompleteReplay() {
 		}
 		j.isPaused = false
 	}
-}
-
-// completeReplay updates Redis to finalize the replay process.
-func (j *clientReplayJob) completeReplay() {
-	ctx := context.Background()
-	statusKey := j.clientID + constants.RedisStatusKeySuffix
-	targetOffsetKey := j.clientID + constants.RedisTargetOffsetKeySuffix
-	lastAckedOffsetKey := j.clientID + constants.RedisLastAckedOffsetKeySuffix
-
-	if err := redisclient.SetKeyValue(ctx, statusKey, constants.REDIS_CLIENT_STATUS_LIVE); err != nil {
-		log.Error().Err(err).Str("clientID", j.clientID).Msg("Failed to transition client to LIVE")
-		return
-	}
-
-	// Cleanup the state keys for this replay session.
-	_ = redisclient.DeleteKey(ctx, targetOffsetKey)
-	_ = redisclient.DeleteKey(ctx, lastAckedOffsetKey)
 }
 
 // resumePartition is a helper to ensure the partition is resumed when the goroutine exits.

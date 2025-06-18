@@ -14,10 +14,6 @@ const (
 	// Example: "client-123-location"
 	RedisLocationKeySuffix = "-location"
 
-	// RedisTargetOffsetKeySuffix is used for the key that stores the "finish line" Kafka offset for a replay session.
-	// Example: "client-123-replay-target-offset"
-	RedisTargetOffsetKeySuffix = "-replay-target-offset"
-
 	// RedisLastAckedOffsetKeySuffix is used for the key that stores the last successfully delivered Kafka offset during a replay.
 	// Example: "client-123-last-acked-offset"
 	RedisLastAckedOffsetKeySuffix = "-last-acked-offset"
