@@ -3,6 +3,7 @@ PROTO_DIR = proto
 SERVER_DIR = cmd/server
 CLIENT_DIR = cmd/client
 CONSUMER_DIR = cmd/kafkaconsumer
+REPLAY_DIR = cmd/kafkareplay
 
 ifeq ($(OS), Windows_NT)
 	SHELL := powershell.exe
@@ -17,6 +18,7 @@ ifeq ($(OS), Windows_NT)
 	SERVER_BIN = ${SERVER_DIR}.exe
 	CLIENT_BIN = ${CLIENT_DIR}.exe
 	CONSUMER_BIN = ${CONSUMER_DIR}.exe
+	REPLAY_BIN = ${REPLAY_DIR}.eve
 else
 	SHELL := bash
 	SHELL_VERSION = $(shell echo $$BASH_VERSION)
@@ -37,6 +39,7 @@ else
 	SERVER_BIN = ${SERVER_DIR}
 	CLIENT_BIN = ${CLIENT_DIR}
 	CONSUMER_BIN = ${CONSUMER_DIR}
+	REPLAY_BIN = ${REPLAY_DIR}
 endif
 
 .DEFAULT_GOAL := help
@@ -53,6 +56,7 @@ $(project):
 	go build -o ${BIN_DIR}/$@/${SERVER_BIN} ./$@/${SERVER_DIR}
 	go build -o ${BIN_DIR}/$@/${CLIENT_BIN} ./$@/${CLIENT_DIR}
 	go build -o ${BIN_DIR}/$@/${CONSUMER_BIN} ./$@/${CONSUMER_BIN}
+	go build -o ${BIN_DIR}/$@/${REPLAY_BIN} ./$@/${REPLAY_BIN}
 
 test: all ## Launch tests
 	go test ./...
@@ -85,11 +89,23 @@ build-n-start: clean nimbus start-server
 start-server:
 	./bin/nimbus/cmd/server
 
+start-server-redis-channel-override:
+	NIMBUS_REDIS_EVENTS_CHANNEL="events_results:nimbus_grpc:pod_777" ./bin/nimbus/cmd/server
+
 start-kafka-consumer:
 	./bin/nimbus/cmd/kafkaconsumer
 
+start-kafka-replay-consumer:
+	./bin/nimbus/cmd/kafkareplay
+
 start-client1:
-	./bin/nimbus/cmd/client --client_id=manoj --start=1 --end=1000
+	./bin/nimbus/cmd/client --client_id=manoj --start=1 --end=10
+
+start-client1_with_10000:
+	./bin/nimbus/cmd/client --client_id=manoj --start=1000 --end=10000
+
+standby-client1:
+	./bin/nimbus/cmd/client --client_id=manoj --start=0 --end=0
 
 start-client2:
 	./bin/nimbus/cmd/client --client_id=james --start=100000 --end=1000000

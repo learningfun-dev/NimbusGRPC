@@ -5,13 +5,17 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"strings"
 	"sync"
 
+	"github.com/learningfun-dev/NimbusGRPC/nimbus/common"
+	"github.com/learningfun-dev/NimbusGRPC/nimbus/constants"
 	"github.com/learningfun-dev/NimbusGRPC/nimbus/kafkaproducer"
 	pb "github.com/learningfun-dev/NimbusGRPC/nimbus/proto"
+	"github.com/learningfun-dev/NimbusGRPC/nimbus/redisclient"
 
+	"github.com/redis/go-redis/v9"
+	"github.com/rs/zerolog/log"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -21,12 +25,10 @@ import (
 type ClientStream struct {
 	Stream   pb.NimbusService_ProcessEventServer
 	ClientID string
-	Done     chan struct{} // Closed when the stream is finished or removed
+	Done     chan struct{}
 }
 
 // ClientStreamManager manages active client streams.
-// This struct and its methods will be used by the server and by the redisclient.RedisSubscriber
-// (via the redisclient.StreamSender interface that this manager's SendToClient method satisfies).
 type ClientStreamManager struct {
 	mu      sync.RWMutex
 	streams map[string]*ClientStream
@@ -40,17 +42,19 @@ func NewClientStreamManager() *ClientStreamManager {
 }
 
 // Register adds a client stream to the manager.
-func (csm *ClientStreamManager) Register(clientID string, stream pb.NimbusService_ProcessEventServer) *ClientStream {
+func (csm *ClientStreamManager) Register(redisChannel string, clientID string, stream pb.NimbusService_ProcessEventServer) *ClientStream {
 	csm.mu.Lock()
 	defer csm.mu.Unlock()
-
 	cs := &ClientStream{
 		Stream:   stream,
 		ClientID: clientID,
 		Done:     make(chan struct{}),
 	}
 	csm.streams[clientID] = cs
-	log.Printf("[INFO] ClientStreamManager: Registered stream for clientID: %s", clientID)
+	log.Info().
+		Str("clientID", clientID).
+		Str("redisChannel", redisChannel).
+		Msg("ClientStreamManager: Registered stream")
 	return cs
 }
 
@@ -58,19 +62,14 @@ func (csm *ClientStreamManager) Register(clientID string, stream pb.NimbusServic
 func (csm *ClientStreamManager) Deregister(clientID string) {
 	csm.mu.Lock()
 	defer csm.mu.Unlock()
-
 	if cs, ok := csm.streams[clientID]; ok {
-		// Check if Done channel is already closed to prevent panic
 		select {
 		case <-cs.Done:
-			// Already closed
 		default:
-			close(cs.Done) // Signal that this stream is done
+			close(cs.Done)
 		}
 		delete(csm.streams, clientID)
-		log.Printf("[INFO] ClientStreamManager: Deregistered stream for clientID: %s", clientID)
-	} else {
-		log.Printf("[WARN] ClientStreamManager: Attempted to deregister non-existent clientID: %s", clientID)
+		log.Info().Str("clientID", clientID).Msg("ClientStreamManager: Deregistered stream")
 	}
 }
 
@@ -83,154 +82,149 @@ func (csm *ClientStreamManager) GetStream(clientID string) (*ClientStream, bool)
 }
 
 // SendToClient sends a response to a specific client.
-// It handles potential errors during sending.
-// This method satisfies the redisclient.StreamSender interface.
 func (csm *ClientStreamManager) SendToClient(clientID string, resp *pb.EventResponse) error {
 	cs, ok := csm.GetStream(clientID)
 	if !ok {
-		log.Printf("[WARN] ClientStreamManager: Client stream not found for clientID during SendToClient: %s", clientID)
+		log.Warn().Str("clientID", clientID).Msg("ClientStreamManager: Client stream not found during SendToClient")
 		return fmt.Errorf("client stream not found for clientID: %s", clientID)
 	}
 
 	select {
 	case <-cs.Done:
-		log.Printf("[WARN] ClientStreamManager: Attempted to send to a closed/done stream for clientID: %s", clientID)
+		log.Warn().Str("clientID", clientID).Msg("ClientStreamManager: Attempted to send to a closed/done stream")
 		return fmt.Errorf("stream for clientID %s is already closed/done", clientID)
 	default:
-		// Proceed with send
 		if err := cs.Stream.Send(resp); err != nil {
-			log.Printf("[ERROR] ClientStreamManager: Failed to send message to clientID %s: %v", clientID, err)
-			// Optionally, deregister the stream if send fails consistently,
-			// as it might indicate a broken connection. This needs careful consideration
-			// to avoid race conditions if Deregister is also called from ProcessEvent's defer.
-			// csm.Deregister(clientID)
+			log.Error().Err(err).Str("clientID", clientID).Msg("ClientStreamManager: Failed to send message to client")
 			return fmt.Errorf("failed to send to client stream for %s: %w", clientID, err)
 		}
-		log.Printf("[DEBUG] ClientStreamManager: Successfully sent message to clientID %s: EventName=%s", clientID, resp.EventName)
 		return nil
 	}
 }
 
+// handleClientConnection sets up the initial state for a client in Redis.
+func (s *Server) handleClientConnection(ctx context.Context, clientID string) error {
+	newPodChannel := s.appConfig.RedisResultsChannel
+	statusKey := clientID + constants.RedisStatusKeySuffix
+	locationKey := clientID + constants.RedisLocationKeySuffix
+
+	// Check the client's current status BEFORE setting anything.
+	currentStatus, err := redisclient.GetKeyValue(ctx, statusKey)
+	if err != nil && !errors.Is(err, redis.Nil) {
+		return status.Errorf(codes.Internal, "failed to get client status: %v", err)
+	}
+
+	// If status is not LIVE (it's OFFLINE, REPLAYING, or NIL), we need to start/continue the replay process.
+	if currentStatus != constants.REDIS_CLIENT_STATUS_LIVE {
+		if errors.Is(err, redis.Nil) {
+			log.Info().Str("clientID", clientID).Msg("New client detected. Setting status to LIVE.")
+			// For a brand new client, just set their status to LIVE.
+			if err := redisclient.SetKeyValue(ctx, statusKey, constants.REDIS_CLIENT_STATUS_LIVE); err != nil {
+				return status.Errorf(codes.Internal, "failed to set new client status to LIVE: %v", err)
+			}
+		} else {
+			// This is a returning client who was offline. Initiate replay.
+			log.Info().Str("clientID", clientID).Str("previousStatus", currentStatus).Msg("Reconnection detected. Initiating replay.")
+			if err := redisclient.SetKeyValue(ctx, statusKey, constants.REDIS_CLIENT_STATUS_REPLAY); err != nil {
+				return status.Errorf(codes.Internal, "failed to set client status to REPLAYING: %v", err)
+			}
+		}
+	} else {
+		log.Info().Str("clientID", clientID).Msg("Client is already LIVE. No replay needed.")
+	}
+
+	// Always update the location to the current pod channel.
+	if err := redisclient.SetKeyValue(ctx, locationKey, newPodChannel); err != nil {
+		return status.Errorf(codes.Internal, "failed to update client location: %v", err)
+	}
+
+	return nil
+}
+
+// handleClientDisconnection cleans up the client's state in Redis.
+func (s *Server) handleClientDisconnection(clientID string) {
+	cleanupCtx := context.Background()
+	log.Info().Str("clientID", clientID).Msg("Disconnecting client. Cleaning up Redis state.")
+
+	// Set status to OFFLINE so the next connection triggers a replay check.
+	if err := redisclient.SetKeyValue(cleanupCtx, clientID+constants.RedisStatusKeySuffix, constants.REDIS_CLIENT_STATUS_OFFLINE); err != nil {
+		log.Error().Err(err).Str("clientID", clientID).Msg("Failed to set status to OFFLINE")
+	}
+
+	if err := redisclient.DeleteKey(cleanupCtx, clientID+constants.RedisLocationKeySuffix); err != nil {
+		log.Error().Err(err).Str("clientID", clientID).Msg("Failed to delete location key")
+	}
+}
+
 // ProcessEvent is the gRPC bidirectional streaming method.
-// It's a method of the `Server` struct (defined in main.go).
 func (s *Server) ProcessEvent(stream pb.NimbusService_ProcessEventServer) error {
-	// Extract client_id from metadata
-	md, ok := metadata.FromIncomingContext(stream.Context())
+	ctx := stream.Context()
+
+	md, ok := metadata.FromIncomingContext(ctx)
 	if !ok {
-		log.Println("[WARN] ProcessEvent: Failed to get metadata from context.")
-		return status.Errorf(codes.DataLoss, "ProcessEvent: failed to get metadata")
+		return status.Errorf(codes.DataLoss, "failed to get metadata")
 	}
 
 	clientIDValues := md.Get("client_id")
 	if len(clientIDValues) == 0 || clientIDValues[0] == "" {
-		log.Println("[WARN] ProcessEvent: client_id not found or empty in metadata.")
 		return status.Errorf(codes.InvalidArgument, "client_id not received or empty in metadata")
 	}
 	clientID := clientIDValues[0]
 
-	log.Printf("[INFO] ProcessEvent: Connection established for clientID: %s", clientID)
+	_ = s.clientStreamManager.Register(s.appConfig.RedisResultsChannel, clientID, stream)
+	defer s.clientStreamManager.Deregister(clientID)
+	defer s.handleClientDisconnection(clientID)
 
-	// Register the stream with the manager
-	// s.clientStreamManager is part of the Server struct
-	clientStream := s.clientStreamManager.Register(clientID, stream)
-	defer s.clientStreamManager.Deregister(clientID) // Ensure stream is deregistered on exit
+	if err := s.handleClientConnection(ctx, clientID); err != nil {
+		log.Error().Err(err).Str("clientID", clientID).Msg("Failed during client connection setup")
+		return err
+	}
 
-	// Goroutine to handle context cancellation (client disconnect, server shutdown)
-	// This helps in logging or cleanup if the stream context finishes independently.
 	go func() {
-		select {
-		case <-stream.Context().Done():
-			log.Printf("[INFO] ProcessEvent: Stream context done for clientID: %s. Error: %v", clientID, stream.Context().Err())
-			// Deregistering here might be redundant due to the defer, but can be useful for immediate logging.
-			// s.clientStreamManager.Deregister(clientID) // Be cautious about double deregistration
-			return
-		case <-clientStream.Done:
-			log.Printf("[INFO] ProcessEvent: Client stream explicitly marked as done for clientID: %s.", clientID)
-			return
-		}
+		<-ctx.Done()
+		log.Info().Str("clientID", clientID).Err(ctx.Err()).Msg("Stream context done")
 	}()
 
-	// Receive messages from client
 	for {
-		// Check if context is done before trying to receive to allow faster exit
-		select {
-		case <-stream.Context().Done():
-			log.Printf("[INFO] ProcessEvent: Stream context done for clientID %s before Recv(): %v", clientID, stream.Context().Err())
-			return stream.Context().Err() // Client disconnected or server shutting down
-		default:
-			// Proceed to Recv
-		}
-
 		req, err := stream.Recv()
 		if err != nil {
-			if errors.Is(err, io.EOF) {
-				log.Printf("[INFO] ProcessEvent: Client %s closed the stream (EOF).", clientID)
-				return nil // Clean disconnect
+			if errors.Is(err, io.EOF) || status.Code(err) == codes.Canceled {
+				log.Info().Str("clientID", clientID).Msg("Client closed the stream.")
+				return nil
 			}
-			// Check for context cancellation error from Recv itself
-			if status.Code(err) == codes.Canceled || errors.Is(err, context.Canceled) {
-				log.Printf("[INFO] ProcessEvent: Stream canceled for client %s: %v", clientID, err)
-				return nil // Context was canceled (e.g. client disconnect or server shutdown)
-			}
-			log.Printf("[ERROR] ProcessEvent: Error receiving message from client %s: %v", clientID, err)
+			log.Error().Err(err).Str("clientID", clientID).Msg("Error receiving message from client")
 			return status.Errorf(codes.Internal, "error receiving message: %v", err)
 		}
 
-		log.Printf("[INFO] ProcessEvent: Received message from clientID %s: EventName=%s, Number=%d",
-			clientID, req.EventName, req.Number)
+		log.Info().
+			Str("clientID", clientID).
+			Str("eventName", req.EventName).
+			Int32("number", req.Number).
+			Msg("Received event from client")
 
-		// Use the RedisEventsChannel from the application configuration (s.appConfig)
-		// s.appConfig is populated in main.go when the Server struct is initialized.
-		if s.appConfig == nil {
-			log.Printf("[ERROR] ProcessEvent: Application configuration (s.appConfig) is nil for clientID: %s", clientID)
-			// This would be a critical setup error.
-			// Optionally send an error back to the client.
-			_ = stream.Send(&pb.EventResponse{EventName: req.EventName, Number: req.Number /* Add error info */})
-			return status.Errorf(codes.Internal, "server configuration error")
-		}
-		redisChannelForKafka := s.appConfig.RedisEventsChannel
-		if redisChannelForKafka == "" {
-			log.Printf("[ERROR] ProcessEvent: RedisEventsChannel in appConfig is empty for clientID: %s", clientID)
-			// Fallback or error handling if channel config is missing
-			_ = stream.Send(&pb.EventResponse{EventName: req.EventName, Number: req.Number /* Add error info */})
-			return status.Errorf(codes.Internal, "server configuration error: Redis channel for Kafka not set")
-		}
+		// Add a structured trace step for when the event is first received.
+		logEntry := common.Append(&pb.LogEntry{}, common.TraceStepInfo{
+			ServiceName: "gRPCServer",
+			MethodName:  "ProcessEvent",
+			Message:     "Received event from client.",
+		})
 
 		switch strings.ToLower(req.EventName) {
-		case "sq": // Example: Square a number
-			kafkaReq := &pb.KafkaEventRequest{
+		case "sq":
+			kafkaReq := &pb.KafkaEventReqest{
 				EventName:    req.EventName,
 				Number:       req.Number,
 				ClientId:     clientID,
-				RedisChannel: redisChannelForKafka,
+				RedisChannel: s.appConfig.RedisResultsChannel,
+				Log:          logEntry,
 			}
-			// kafkaproducer.SendEventToKafkaTopic uses its internally configured default topic.
-			// If the topic needs to be dynamic per request or from main config,
-			// SendEventToKafkaTopic would need to accept it as a parameter.
 			if err := kafkaproducer.SendEventToDefaultTopic(kafkaReq); err != nil {
-				log.Printf("[ERROR] ProcessEvent: Failed to send event to Kafka for clientID %s: %v. Event: %+v",
-					clientID, err, kafkaReq)
-				// Optionally, send an error response back to the client on this stream
-				if errSend := stream.Send(&pb.EventResponse{
-					EventName: req.EventName, Number: req.Number, // Result: 0, or add an error field
-				}); errSend != nil {
-					log.Printf("[ERROR] ProcessEvent: Failed to send Kafka error notification to client %s: %v", clientID, errSend)
-				}
+				log.Error().Err(err).Str("clientID", clientID).Msg("Failed to send event to Kafka")
 			} else {
-				log.Printf("[INFO] ProcessEvent: Event sent to Kafka for clientID %s: %+v", clientID, kafkaReq)
+				log.Debug().Str("clientID", clientID).Msg("Event sent to Kafka.")
 			}
 		default:
-			log.Printf("[WARN] ProcessEvent: Received unknown event name '%s' from clientID %s", req.EventName, clientID)
-			// Send an error back to the client for this specific request
-			if errSend := stream.Send(&pb.EventResponse{
-				EventName: req.EventName,
-				Number:    req.Number,
-				// Result might be 0 or you could add an error message field to EventResponse
-			}); errSend != nil {
-				log.Printf("[ERROR] ProcessEvent: Failed to send unknown event error response to clientID %s: %v", clientID, errSend)
-				// Depending on severity, you might return an error that closes the stream
-				// return status.Errorf(codes.Internal, "failed to send error response for unknown event: %v", errSend)
-			}
+			log.Warn().Str("clientID", clientID).Str("eventName", req.EventName).Msg("Received unknown event name")
 		}
 	}
 }

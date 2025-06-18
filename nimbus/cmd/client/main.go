@@ -2,15 +2,16 @@ package main
 
 import (
 	"context"
-	"flag" // For errors.Is
-	"log"
+	"flag"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	"github.com/learningfun-dev/NimbusGRPC/nimbus/logger"
 	pb "github.com/learningfun-dev/NimbusGRPC/nimbus/proto" // Adjust import path
-	"google.golang.org/grpc"
+	"github.com/rs/zerolog/log"
+	"google.golang.org/grpc" // For gRPC status codes
 	"google.golang.org/grpc/credentials/insecure"
 )
 
@@ -22,9 +23,11 @@ const (
 )
 
 func main() {
+
+	logger.Init()
+
 	// Setup logging
-	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
-	log.Println("[INFO] Nimbus gRPC Client starting...")
+	log.Info().Msg("Nimbus gRPC Client starting...")
 
 	// Configuration flags
 	serverAddr := flag.String("addr", defaultServerAddr, "The server address in the format host:port")
@@ -33,7 +36,10 @@ func main() {
 	endNum := flag.Int("end", defaultEndNum, "End of the number range for events")
 	flag.Parse()
 
-	log.Printf("[INFO] Attempting to connect to server at: %s with ClientID: %s", *serverAddr, *clientID)
+	log.Info().
+		Str("address", *serverAddr).
+		Str("clientID", *clientID).
+		Msg("Attempting to connect to server")
 
 	// Set up a connection to the server.
 	// Adding grpc.WithBlock() to make the connection attempt synchronous for a short period.
@@ -46,17 +52,17 @@ func main() {
 		grpc.WithBlock(), // Block until connection is up or context times out
 	)
 	if err != nil {
-		log.Fatalf("[FATAL] Failed to connect to server: %v", err)
+		log.Fatal().Err(err).Msg("Failed to connect to server")
 	}
 	defer func() {
-		log.Println("[INFO] Closing gRPC connection...")
+		log.Info().Msg("Closing gRPC connection...")
 		if err := conn.Close(); err != nil {
-			log.Printf("[ERROR] Failed to close gRPC connection: %v", err)
+			log.Error().Err(err).Msg("Failed to close gRPC connection")
 		}
-		log.Println("[INFO] gRPC connection closed.")
+		log.Info().Msg("gRPC connection closed.")
 	}()
 
-	log.Printf("[INFO] Successfully connected to server at: %s", *serverAddr)
+	log.Info().Str("address", *serverAddr).Msg("Successfully connected to server")
 	c := pb.NewNimbusServiceClient(conn)
 
 	// Create a context that can be canceled for graceful shutdown
@@ -68,7 +74,7 @@ func main() {
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		sig := <-sigChan
-		log.Printf("[INFO] Received OS signal: %v. Initiating client shutdown...", sig)
+		log.Info().Str("signal", sig.String()).Msg("Received OS signal, initiating client shutdown")
 		cancel() // Cancel the main context
 	}()
 
@@ -76,8 +82,8 @@ func main() {
 	// Pass the mainCtx which can be used by sendAndReceiveEvents for its operations.
 	err = sendAndReceiveEvents(mainCtx, c, *clientID, *startNum, *endNum)
 	if err != nil {
-		log.Printf("[ERROR] Error during event processing: %v", err)
+		log.Error().Err(err).Msg("Error during event processing")
 	}
 
-	log.Println("[INFO] Nimbus gRPC Client finished.")
+	log.Info().Msg("Nimbus gRPC Client finished.")
 }
