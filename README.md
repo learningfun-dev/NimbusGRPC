@@ -1,4 +1,4 @@
-# NimbusGRPC
+# NimbusGRPC [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/learningfun-dev/NimbusGRPC)
 
 NimbusGRPC is a high-throughput, scalable event processing system built using **gRPC**, **Kafka**, and **Redis**. Designed for mobile and IoT workloads, it provides a hybrid real-time communication layer using bi-directional streaming and a robust pub/sub architecture.
 
